@@ -120,18 +120,30 @@ logger.info("=" * 60)
 logger.info("电信客户流失预测与价值细分系统 — 项目6")
 logger.info("=" * 60)
 
+# ===== 0. 环境检查 =====
+try:
+    logger.info(f"NumPy: {np.__version__}, Pandas: {pd.__version__}, "
+                f"Scikit-learn: {__import__('sklearn').__version__}, "
+                f"XGBoost: {xgb.__version__}, LightGBM: {lgb.__version__}")
+except Exception:
+    logger.warning("部分依赖版本检查失败，继续执行")
+
 # ===== 1. 数据加载 =====
 logger.info("[1/10] 数据加载...")
 data_cfg = cfg.get('data', {})
 data_file = data_cfg.get('data_file', 'WA_Fn-UseC_-Telco-Customer-Churn.csv')
 data_path = os.path.join(data_cfg.get('data_path', './data/raw'), data_file)
-if os.path.exists(data_path):
-    df_raw = pd.read_csv(data_path)
-    logger.info(f"从本地加载: {data_path}")
-else:
-    fallback_url = "https://raw.githubusercontent.com/IBM/telco-customer-churn-on-icp4d/master/data/Telco-Customer-Churn.csv"
-    df_raw = pd.read_csv(fallback_url)
-    logger.info("从网络加载数据（GitHub）")
+try:
+    if os.path.exists(data_path):
+        df_raw = pd.read_csv(data_path)
+        logger.info(f"从本地加载: {data_path}")
+    else:
+        fallback_url = "https://raw.githubusercontent.com/IBM/telco-customer-churn-on-icp4d/master/data/Telco-Customer-Churn.csv"
+        df_raw = pd.read_csv(fallback_url)
+        logger.info("从网络加载数据（GitHub）")
+except Exception as e:
+    logger.error(f"数据加载失败: {e}")
+    sys.exit(1)
 logger.info(f"  数据集: {df_raw.shape[0]} 条 × {df_raw.shape[1]} 列, 流失率: {df_raw['Churn'].eq('Yes').mean():.2%}")
 
 # ===== 2. 数据预处理 =====
