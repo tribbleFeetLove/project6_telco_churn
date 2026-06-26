@@ -92,5 +92,3 @@ project6_telco_churn/
 | Random Forest | - | - | - | - | - |
 | XGBoost | - | - | - | - | - |
 | LightGBM | - | - | - | - | - |
-
-*运行完整 Notebook 后自动填充实验结果。*
