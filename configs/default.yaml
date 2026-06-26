@@ -1,0 +1,86 @@
+# 电信客户流失预测与价值细分系统 - 默认配置
+
+data:
+  data_path: "./data/raw"
+  processed_path: "./data/processed"
+  dataset_url: "https://www.kaggle.com/datasets/blastchar/telco-customer-churn"
+  data_file: "WA_Fn-UseC_-Telco-Customer-Churn.csv"
+  train_ratio: 0.8
+  random_state: 42
+
+preprocessing:
+  handle_missing: true
+  missing_strategy: "median"  # median / mean / mode
+  outlier_method: "iqr"       # iqr / zscore
+  outlier_threshold: 1.5
+  encode_categorical: true
+  scaling: "standard"         # standard / minmax
+
+feature_engineering:
+  use_rfm: true
+  use_woe: true
+  woe_bins: 10
+  feature_selection_method: "importance"  # importance / rfe / null
+
+model:
+  balanced: true
+  balance_method: "smote"  # smote / class_weight / none
+  cv_folds: 5
+  models:
+    - logistic_regression
+    - random_forest
+    - xgboost
+    - lightgbm
+
+training:
+  logistic_regression:
+    C: 1.0
+    max_iter: 1000
+    solver: "liblinear"
+
+  random_forest:
+    n_estimators: 200
+    max_depth: 10
+    min_samples_split: 10
+    min_samples_leaf: 5
+
+  xgboost:
+    n_estimators: 200
+    max_depth: 6
+    learning_rate: 0.1
+    subsample: 0.8
+    colsample_bytree: 0.8
+
+  lightgbm:
+    n_estimators: 200
+    max_depth: 6
+    learning_rate: 0.1
+    num_leaves: 31
+    subsample: 0.8
+    colsample_bytree: 0.8
+
+clustering:
+  n_clusters_kmeans: 4
+  dbscan_eps: 0.5
+  dbscan_min_samples: 10
+  use_pca: true
+  pca_n_components: 2
+
+evaluation:
+  metrics:
+    - accuracy
+    - precision
+    - recall
+    - f1
+    - roc_auc
+    - pr_auc
+  plot_curves:
+    - roc
+    - pr
+    - confusion_matrix
+    - shap_summary
+
+logging:
+  log_dir: "./experiments"
+  save_models: true
+  save_plots: true
