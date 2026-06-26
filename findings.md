@@ -23,3 +23,12 @@
 - Added a Random Forest ablation table comparing Base, Base+RFM, Base+RFM+WOE, and Base+RFM+WOE+SMOTE.
 - Current ablation shows SMOTE materially improves recall/F1 (`Recall=0.7086`, `F1=0.6295`) while slightly reducing accuracy and precision versus the no-SMOTE baseline.
 - `run_analysis.py` needed UTF-8 stdout/stderr configuration for Windows consoles; otherwise the checkmark output can fail under GBK.
+
+## Phase 3 Findings
+
+- The repository had `train.py` and `evaluate.py`, but no direct batch prediction entry point for new CSV files.
+- `predict.py` now loads `models/best_model_with_features.pkl`, aligns features to saved model metadata, and writes `churn_probability` plus `predicted_churn`.
+- Prediction preprocessing refits WOE mappings only on the configured training split, then maps incoming rows without requiring their labels.
+- Prediction categorical encoding is fitted on the training reference data and reused for incoming rows; unseen categories are encoded as `-1`.
+- Tests use Python `unittest` to avoid adding a new test dependency.
+- Windows subprocess output needed explicit UTF-8 configuration in `predict.py` for reliable test capture.

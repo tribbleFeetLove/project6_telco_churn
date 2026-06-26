@@ -17,3 +17,7 @@
 - Phase 2 generated `experiments/cv_results.csv`, `experiments/ablation_results.csv`, and `experiments/ablation_results.png`.
 - Phase 2 initial `python run_analysis.py` failed on Windows console encoding (`UnicodeEncodeError` for checkmark output); added UTF-8 stdout/stderr configuration and reran successfully.
 - Phase 2 executed the notebook in-place successfully. `joblib` emitted non-fatal `resource_tracker` cleanup traces after exit; command exit code was 0.
+- Phase 3 added `utils/predict_utils.py` with config/model loading and leakage-free prediction feature preparation.
+- Phase 3 added `predict.py` with input/output/config/model-path arguments and optional probability thresholding.
+- Phase 3 added `tests/test_predict.py` covering feature alignment and CLI output generation.
+- Phase 3 validation passed: py_compile, unittest discovery, `predict.py --help`, and a 5-row sample prediction command.

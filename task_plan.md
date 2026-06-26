@@ -6,7 +6,7 @@ Goal: Improve the course project in four independently committed units.
 
 1. [complete] Sync notebook and `run_analysis.py` with the leakage-free `main.py` flow.
 2. [complete] Move SMOTE into cross-validation pipelines and add ablation experiments.
-3. [pending] Add `predict.py` and basic tests.
+3. [complete] Add `predict.py` and basic tests.
 4. [pending] Update report and PPT so metrics/method descriptions match current code.
 
 ## Commit Rules
@@ -24,3 +24,7 @@ Goal: Improve the course project in four independently committed units.
 - Phase 2: `python train.py --config configs/default.yaml` passed and regenerated CV/ablation artifacts.
 - Phase 2: `python run_analysis.py` passed after adding UTF-8 stdout/stderr configuration.
 - Phase 2: `python -m jupyter nbconvert --to notebook --execute --inplace Telco_Customer_Churn_Analysis.ipynb --ExecutePreprocessor.timeout=900` passed; Windows/joblib emitted non-fatal `resource_tracker` cleanup noise.
+- Phase 3: `python -m py_compile predict.py utils\predict_utils.py tests\test_predict.py` passed.
+- Phase 3: `python -m unittest discover -s tests` passed with 3 tests.
+- Phase 3: `python predict.py --help` passed.
+- Phase 3: small-sample `python predict.py --input ... --output ...` passed and wrote prediction probabilities.
