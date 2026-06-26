@@ -95,6 +95,13 @@ cells.append(make_cell("code", [
     "# 2. 环境配置与依赖导入\n",
     "# ============================================================\n",
     "\n",
+    "import sys\n",
+    "try:\n",
+    "    sys.stdout.reconfigure(encoding='utf-8')\n",
+    "    sys.stderr.reconfigure(encoding='utf-8')\n",
+    "except AttributeError:\n",
+    "    pass\n",
+    "\n",
     "# ---- 基础数据处理 ----\n",
     "import numpy as np\n",
     "import pandas as pd\n",
@@ -104,7 +111,7 @@ cells.append(make_cell("code", [
     "warnings.filterwarnings('ignore')\n",
     "\n",
     "# ---- 机器学习 ----\n",
-    "from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score, GridSearchCV\n",
+    "from sklearn.model_selection import train_test_split, StratifiedKFold, GridSearchCV\n",
     "from sklearn.preprocessing import StandardScaler, MinMaxScaler, LabelEncoder\n",
     "from sklearn.impute import SimpleImputer\n",
     "from sklearn.linear_model import LogisticRegression\n",
@@ -138,6 +145,7 @@ cells.append(make_cell("code", [
     "from tqdm import tqdm\n",
     "\n",
     "from utils.data_utils import add_woe_features\n",
+    "from utils.model_utils import cross_validate_with_smote, run_ablation_experiments\n",
     "\n",
     "# ---- 设置中文字体 ----\n",
     "matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']\n",
@@ -527,6 +535,16 @@ cells.append(make_cell("code", [
     "print(\"WOE编码将在训练/测试划分后仅使用训练集拟合，避免标签泄漏\")\n",
     "print(f\"\\nRFM特征工程后特征数: {df_fe.shape[1]}\")\n",
     "\n",
+    "X_base = df_raw.copy()\n",
+    "if 'customerID' in X_base.columns:\n",
+    "    X_base.drop('customerID', axis=1, inplace=True)\n",
+    "X_base['TotalCharges'] = pd.to_numeric(X_base['TotalCharges'], errors='coerce')\n",
+    "X_base['TotalCharges'].fillna(X_base['TotalCharges'].median(), inplace=True)\n",
+    "for col in X_base.select_dtypes(include=['object']).columns:\n",
+    "    if col != 'Churn':\n",
+    "        X_base[col] = LabelEncoder().fit_transform(X_base[col].astype(str))\n",
+    "X_base = X_base.drop('Churn', axis=1).fillna(0)\n",
+    "\n",
     "X_all = df_fe.drop('Churn', axis=1)\n",
     "y_all = df_fe['Churn']"
 ]))
@@ -558,18 +576,20 @@ cells.append(make_cell("markdown", [
 
 cells.append(make_cell("code", [
     "# ---- 数据划分 ----\n",
-    "X_train, X_test, y_train, y_test = train_test_split(\n",
-    "    X_all, y_all, test_size=0.2, random_state=RANDOM_STATE, stratify=y_all\n",
+    "X_base_train, X_base_test, y_train, y_test = train_test_split(\n",
+    "    X_base, y_all, test_size=0.2, random_state=RANDOM_STATE, stratify=y_all\n",
     ")\n",
+    "X_rfm_train = X_all.loc[X_base_train.index].copy()\n",
+    "X_rfm_test = X_all.loc[X_base_test.index].copy()\n",
     "\n",
-    "print(f\"训练集: {X_train.shape[0]} 样本 (流失率: {y_train.mean():.2%})\")\n",
-    "print(f\"测试集: {X_test.shape[0]} 样本 (流失率: {y_test.mean():.2%})\")\n",
+    "print(f\"训练集: {X_base_train.shape[0]} 样本 (流失率: {y_train.mean():.2%})\")\n",
+    "print(f\"测试集: {X_base_test.shape[0]} 样本 (流失率: {y_test.mean():.2%})\")\n",
     "\n",
     "# ---- WOE分箱对关键特征 ----\n",
     "woe_features = ['tenure', 'MonthlyCharges', 'TotalCharges']\n",
     "X_train, X_test = add_woe_features(\n",
-    "    X_train,\n",
-    "    X_test,\n",
+    "    X_rfm_train,\n",
+    "    X_rfm_test,\n",
     "    y_train,\n",
     "    columns=woe_features,\n",
     "    n_bins=10,\n",
@@ -682,7 +702,7 @@ cells.append(make_cell("code", [
 # ============================================================
 cells.append(make_cell("markdown", [
     "### 7.2 5折交叉验证\n",
-    "在SMOTE处理后的训练集上进行5折分层交叉验证，评估各模型的稳定性。"
+    "使用imblearn Pipeline在每个训练折内部执行SMOTE，避免验证折参与过采样。"
 ]))
 
 cells.append(make_cell("code", [
@@ -698,8 +718,10 @@ cells.append(make_cell("code", [
     "for name, model in models.items():\n",
     "    cv_scores = {}\n",
     "    for metric in scoring_metrics:\n",
-    "        scores = cross_val_score(model, X_train_smote, y_train_smote,\n",
-    "                                cv=cv, scoring=metric, n_jobs=-1)\n",
+    "        scores = cross_validate_with_smote(\n",
+    "            model, X_train, y_train, cv=cv, metric=metric,\n",
+    "            random_state=RANDOM_STATE, n_jobs=-1\n",
+    "        )\n",
     "        cv_scores[metric] = {'mean': scores.mean(), 'std': scores.std()}\n",
     "    cv_results[name] = cv_scores\n",
     "    \n",
@@ -722,7 +744,66 @@ cells.append(make_cell("code", [
 ]))
 
 # ============================================================
-# Cell 16: 模型训练
+# Cell 16: 消融实验
+# ============================================================
+cells.append(make_cell("markdown", [
+    "### 7.3 消融实验\n",
+    "比较基础特征、RFM、WOE与SMOTE对随机森林模型的增益。"
+]))
+
+cells.append(make_cell("code", [
+    "# ---- 消融实验 ----\n",
+    "ablation_model = RandomForestClassifier(\n",
+    "    n_estimators=200, max_depth=10, min_samples_split=10,\n",
+    "    min_samples_leaf=5, random_state=RANDOM_STATE, n_jobs=-1\n",
+    ")\n",
+    "ablation_df = run_ablation_experiments(\n",
+    "    {\n",
+    "        'Base': {\n",
+    "            'X_train': X_base_train,\n",
+    "            'X_test': X_base_test,\n",
+    "            'features': 'Original encoded features',\n",
+    "            'use_smote': False,\n",
+    "        },\n",
+    "        'Base+RFM': {\n",
+    "            'X_train': X_rfm_train,\n",
+    "            'X_test': X_rfm_test,\n",
+    "            'features': 'Original + RFM',\n",
+    "            'use_smote': False,\n",
+    "        },\n",
+    "        'Base+RFM+WOE': {\n",
+    "            'X_train': X_train,\n",
+    "            'X_test': X_test,\n",
+    "            'features': 'Original + RFM + WOE',\n",
+    "            'use_smote': False,\n",
+    "        },\n",
+    "        'Base+RFM+WOE+SMOTE': {\n",
+    "            'X_train': X_train,\n",
+    "            'X_test': X_test,\n",
+    "            'features': 'Original + RFM + WOE',\n",
+    "            'use_smote': True,\n",
+    "        },\n",
+    "    },\n",
+    "    y_train, y_test, base_model=ablation_model, random_state=RANDOM_STATE,\n",
+    ")\n",
+    "display(ablation_df.round(4))\n",
+    "ablation_df.to_csv('./experiments/ablation_results.csv')\n",
+    "\n",
+    "ablation_plot = ablation_df[['ROC_AUC', 'Recall', 'F1']]\n",
+    "fig, ax = plt.subplots(figsize=(10, 5))\n",
+    "ablation_plot.plot(kind='bar', ax=ax)\n",
+    "ax.set_ylim(0, 1.0)\n",
+    "ax.set_title('Ablation Study')\n",
+    "ax.set_ylabel('Score')\n",
+    "ax.grid(axis='y', alpha=0.3)\n",
+    "plt.xticks(rotation=20, ha='right')\n",
+    "plt.tight_layout()\n",
+    "plt.savefig('./experiments/ablation_results.png', dpi=150, bbox_inches='tight')\n",
+    "plt.show()"
+]))
+
+# ============================================================
+# Cell 30: 模型训练
 # ============================================================
 cells.append(make_cell("markdown", [
     "### 7.3 模型训练与测试集评估\n",
@@ -785,7 +866,7 @@ cells.append(make_cell("code", [
 ]))
 
 # ============================================================
-# Cell 17: 最佳模型
+# Cell 30: 最佳模型
 # ============================================================
 cells.append(make_cell("code", [
     "# ---- 找出最佳模型 ----\n",
@@ -804,7 +885,7 @@ cells.append(make_cell("code", [
 ]))
 
 # ============================================================
-# Cell 18: 模型评估可视化
+# Cell 30: 模型评估可视化
 # ============================================================
 cells.append(make_cell("markdown", [
     "## 8. 模型评估与可视化\n",
@@ -840,7 +921,7 @@ cells.append(make_cell("code", [
 ]))
 
 # ============================================================
-# Cell 19: ROC曲线
+# Cell 30: ROC曲线
 # ============================================================
 cells.append(make_cell("markdown", [
     "### 8.2 ROC曲线对比"
@@ -870,7 +951,7 @@ cells.append(make_cell("code", [
 ]))
 
 # ============================================================
-# Cell 20: PR曲线
+# Cell 30: PR曲线
 # ============================================================
 cells.append(make_cell("markdown", [
     "### 8.3 Precision-Recall曲线对比\n",
@@ -907,7 +988,7 @@ cells.append(make_cell("code", [
 ]))
 
 # ============================================================
-# Cell 21: 混淆矩阵
+# Cell 30: 混淆矩阵
 # ============================================================
 cells.append(make_cell("markdown", [
     "### 8.4 混淆矩阵\n",
@@ -939,7 +1020,7 @@ cells.append(make_cell("code", [
 ]))
 
 # ============================================================
-# Cell 22: SHAP分析
+# Cell 30: SHAP分析
 # ============================================================
 cells.append(make_cell("markdown", [
     "## 9. SHAP可解释性分析\n",
@@ -1023,7 +1104,7 @@ cells.append(make_cell("code", [
 ]))
 
 # ============================================================
-# Cell 23: 客户聚类
+# Cell 30: 客户聚类
 # ============================================================
 cells.append(make_cell("markdown", [
     "## 10. 客户聚类细分\n",
@@ -1124,7 +1205,7 @@ cells.append(make_cell("code", [
 ]))
 
 # ============================================================
-# Cell 24: 聚类画像
+# Cell 30: 聚类画像
 # ============================================================
 cells.append(make_cell("markdown", [
     "### 10.2 聚类画像分析\n",
@@ -1175,7 +1256,7 @@ cells.append(make_cell("code", [
 ]))
 
 # ============================================================
-# Cell 25: 聚类命名
+# Cell 30: 聚类命名
 # ============================================================
 cells.append(make_cell("code", [
     "# ---- 聚类命名与描述 ----\n",
@@ -1215,7 +1296,7 @@ cells.append(make_cell("code", [
 ]))
 
 # ============================================================
-# Cell 26: DBSCAN对比
+# Cell 30: DBSCAN对比
 # ============================================================
 cells.append(make_cell("markdown", [
     "### 10.3 DBSCAN密度聚类（对比实验）\n",
@@ -1263,7 +1344,7 @@ cells.append(make_cell("code", [
 ]))
 
 # ============================================================
-# Cell 27: 业务策略建议
+# Cell 30: 业务策略建议
 # ============================================================
 cells.append(make_cell("markdown", [
     "## 11. 业务策略建议\n",
@@ -1318,7 +1399,7 @@ cells.append(make_cell("code", [
 ]))
 
 # ============================================================
-# Cell 28: 结论
+# Cell 30: 结论
 # ============================================================
 cells.append(make_cell("markdown", [
     "## 12. 结论与展望\n",
@@ -1358,7 +1439,7 @@ cells.append(make_cell("markdown", [
 ]))
 
 # ============================================================
-# Cell 29: 保存结果
+# Cell 30: 保存结果
 # ============================================================
 cells.append(make_cell("code", [
     "# ---- 保存所有实验结果 ----\n",
@@ -1367,6 +1448,8 @@ cells.append(make_cell("code", [
     "# 保存模型对比表\n",
     "comparison_df.to_csv('./experiments/model_comparison.csv')\n",
     "print(\"✓ 模型对比表 -> ./experiments/model_comparison.csv\")\n",
+    "print(\"✓ 交叉验证结果 -> ./experiments/cv_results.csv\")\n",
+    "print(\"✓ 消融实验结果 -> ./experiments/ablation_results.csv\")\n",
     "\n",
     "# 保存聚类结果\n",
     "df_cluster_profile[['Cluster'] + cluster_features].to_csv(\n",

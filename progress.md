@@ -10,3 +10,10 @@
 - Non-project validation error: attempted to run a tiny `bash` command, but this Windows environment has no `/bin/bash`; switched back to PowerShell/Python.
 - Phase 1 notebook execution failed at SHAP importance table because `shap_values` can produce a multi-dimensional mean array. Fixing SHAP flattening in `run_analysis.py` and notebook generator.
 - Phase 1 verification passed after SHAP flattening fix; removed temporary executed notebook.
+- Phase 2 added `build_smote_pipeline`, `cross_validate_with_smote`, and `run_ablation_experiments` to `utils/model_utils.py`.
+- Phase 2 updated `main.py`, `run_analysis.py`, and `generate_notebook.py` so cross-validation uses fold-internal SMOTE instead of pre-SMOTE data.
+- Phase 2 regenerated `Telco_Customer_Churn_Analysis.ipynb` with the new CV and ablation sections.
+- Phase 2 ran `python train.py --config configs/default.yaml`; best test model was Random Forest with ROC-AUC 0.8386, Recall 0.7086, F1 0.6295.
+- Phase 2 generated `experiments/cv_results.csv`, `experiments/ablation_results.csv`, and `experiments/ablation_results.png`.
+- Phase 2 initial `python run_analysis.py` failed on Windows console encoding (`UnicodeEncodeError` for checkmark output); added UTF-8 stdout/stderr configuration and reran successfully.
+- Phase 2 executed the notebook in-place successfully. `joblib` emitted non-fatal `resource_tracker` cleanup traces after exit; command exit code was 0.
