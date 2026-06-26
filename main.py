@@ -2,8 +2,11 @@
 电信客户流失预测与价值细分系统 — 完整分析脚本
 可直接运行: python main.py
 """
-import os, sys, warnings, json, yaml, logging
+import argparse, os, sys, warnings, json, yaml, logging
 warnings.filterwarnings('ignore')
+
+EXPERIMENTS_DIR = './experiments'
+os.makedirs(EXPERIMENTS_DIR, exist_ok=True)
 
 import numpy as np
 import pandas as pd
@@ -25,7 +28,7 @@ from imblearn.over_sampling import SMOTE
 import shap
 import joblib
 
-from utils.data_utils import set_random_seed, split_data, apply_smote
+from utils.data_utils import add_woe_features, set_random_seed, split_data, apply_smote
 from utils.model_utils import save_model
 from utils.visualization import setup_plot_style
 
@@ -42,7 +45,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ===== 加载配置 =====
-config_path = './configs/default.yaml'
+parser = argparse.ArgumentParser(description='运行电信客户流失预测完整训练流程')
+parser.add_argument('--config', default='./configs/default.yaml', help='YAML配置文件路径')
+args, _ = parser.parse_known_args()
+config_path = args.config
 if os.path.exists(config_path):
     with open(config_path, 'r', encoding='utf-8') as f:
         cfg = yaml.safe_load(f)
@@ -162,7 +168,7 @@ for col in df.select_dtypes(include=['object']).columns:
     df[col] = LabelEncoder().fit_transform(df[col].astype(str))
 
 # ===== 3. 特征工程 =====
-logger.info("[3/10] 特征工程 (RFM + WOE)...")
+logger.info("[3/10] 特征工程 (RFM)...")
 # RFM
 df['R_Score'] = 1 / (df['tenure'] + 1)
 svc_cols = ['PhoneService', 'MultipleLines', 'InternetService', 'OnlineSecurity',
@@ -170,22 +176,6 @@ svc_cols = ['PhoneService', 'MultipleLines', 'InternetService', 'OnlineSecurity'
 df['F_Score'] = sum((df[c] > 0).astype(int) for c in svc_cols if c in df.columns)
 df['M_Score'] = df['MonthlyCharges']
 df['RFM_Total'] = df['R_Score'] + df['F_Score'] / 9 + df['M_Score'] / df['M_Score'].max()
-
-# WOE
-def compute_woe(feature, target, n_bins=10):
-    df_t = pd.DataFrame({'f': feature, 't': target})
-    if df_t['f'].nunique() > n_bins:
-        df_t['bin'] = pd.qcut(df_t['f'], q=n_bins, duplicates='drop')
-    else:
-        df_t['bin'] = df_t['f']
-    g = df_t.groupby('bin').agg(good=('t', lambda x: (x==0).sum()), bad=('t', lambda x: (x==1).sum()))
-    tg, tb = (target==0).sum(), (target==1).sum()
-    g['woe'] = np.log((g['good']/tg + 1e-6) / (g['bad']/tb + 1e-6))
-    return df_t['bin'].map(g['woe'])
-
-woe_bins = cfg.get('feature_engineering', {}).get('woe_bins', 10)
-for col in ['tenure', 'MonthlyCharges', 'TotalCharges']:
-    df[f'{col}_WOE'] = compute_woe(df[col], df['Churn'], n_bins=woe_bins)
 
 for col in df.columns:
     if df[col].dtype.name == 'category':
@@ -200,6 +190,16 @@ y = df['Churn']
 train_ratio = cfg.get('data', {}).get('train_ratio', 0.8)
 X_train, X_test, y_train, y_test = split_data(
     X, y, train_ratio=train_ratio, random_state=RANDOM_STATE)
+
+woe_bins = cfg.get('feature_engineering', {}).get('woe_bins', 10)
+X_train, X_test = add_woe_features(
+    X_train,
+    X_test,
+    y_train,
+    columns=['tenure', 'MonthlyCharges', 'TotalCharges'],
+    n_bins=woe_bins,
+)
+logger.info(f"  WOE特征已基于训练集拟合，当前特征数: {X_train.shape[1]}")
 
 X_train_smote, y_train_smote = apply_smote(X_train, y_train, random_state=RANDOM_STATE)
 X_train_smote = safe_fillna(X_train_smote)
@@ -291,14 +291,19 @@ best_model = all_results[best_name]['model']
 if hasattr(best_model, 'feature_importances_'):
     imp = best_model.feature_importances_
     idx = np.argsort(imp)[-15:]
+    feature_names = X_train.columns
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.barh(range(15), imp[idx][::-1], color=plt.cm.Blues(np.linspace(0.4, 0.9, 15))[::-1], edgecolor='white')
-    ax.set_yticks(range(15)); ax.set_yticklabels(X.columns[idx][::-1])
+    ax.set_yticks(range(15)); ax.set_yticklabels(feature_names[idx][::-1])
     ax.set_title(f'Feature Importance ({best_name})'); ax.set_xlabel('Importance')
     plt.tight_layout(); plt.savefig(f'{EXPERIMENTS_DIR}/feature_importance.png', dpi=150); plt.close()
 
 logger.info(f"  最佳模型: {best_name} (ROC-AUC={all_results[best_name]['roc_auc']:.4f})")
 save_model(best_model, './models/best_model.pkl')
+joblib.dump(
+    {'model': best_model, 'feature_names': X_train_smote.columns.tolist()},
+    './models/best_model_with_features.pkl',
+)
 
 # ===== 9. SHAP分析 =====
 logger.info("[9/10] SHAP可解释性分析...")
@@ -392,6 +397,6 @@ for i in range(n_clusters):
     logger.info(f"  Cluster {i}: {cluster_profile.loc[i, 'Size']:.0f}人, 流失率={churn_r:.2%}, 月费=${cluster_profile.loc[i, 'MonthlyCharges']:.1f}")
 
 logger.info(f"模型对比表:\n{comp_df.to_string()}")
-logger.info(f"✓ 最佳模型: ./models/best_model.pkl")
-logger.info(f"✓ 实验结果: {EXPERIMENTS_DIR}/")
+logger.info("OK 最佳模型: ./models/best_model.pkl")
+logger.info(f"OK 实验结果: {EXPERIMENTS_DIR}/")
 logger.info("Done!")
