@@ -32,3 +32,11 @@
 - Prediction categorical encoding is fitted on the training reference data and reused for incoming rows; unseen categories are encoded as `-1`.
 - Tests use Python `unittest` to avoid adding a new test dependency.
 - Windows subprocess output needed explicit UTF-8 configuration in `predict.py` for reliable test capture.
+
+## Phase 4 Findings
+
+- `build_report.py`, `build_ppt.py`, and `convert_report.py` still used a hardcoded desktop path; scripts now write relative to the project root.
+- The report and PPT contained old optimistic CV metrics from validating on pre-SMOTE data; they now describe fold-internal SMOTE and use `experiments/cv_results.csv`.
+- Test-set metrics are now aligned with `experiments/model_comparison.csv`: Random Forest ROC-AUC 0.8386, Recall 0.7086, F1 0.6295.
+- The ablation section now matches `experiments/ablation_results.csv`, emphasizing that SMOTE improves Recall from 0.4893 to 0.7086.
+- Regenerated `实验报告.pdf`, `实验报告.docx`, and `答辩PPT.pptx`; PPT remains 15 slides.

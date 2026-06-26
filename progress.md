@@ -21,3 +21,7 @@
 - Phase 3 added `predict.py` with input/output/config/model-path arguments and optional probability thresholding.
 - Phase 3 added `tests/test_predict.py` covering feature alignment and CLI output generation.
 - Phase 3 validation passed: py_compile, unittest discovery, `predict.py --help`, and a 5-row sample prediction command.
+- Phase 4 updated `build_report.py`, `build_ppt.py`, and `convert_report.py` to remove hardcoded desktop paths.
+- Phase 4 synchronized report/PPT methods and metrics with current artifacts: fold-internal SMOTE CV, Random Forest test ROC-AUC 0.8386, Recall 0.7086, F1 0.6295, and ablation results.
+- Phase 4 regenerated `实验报告.docx`, exported `实验报告.pdf` via Word COM, and regenerated `答辩PPT.pptx`.
+- Phase 4 validation confirmed generated DOCX/PPT contain new metrics and no longer contain old metrics `0.8382`, `0.7139`, `0.9337`, or `0.9175`.

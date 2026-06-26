@@ -1,7 +1,7 @@
 """将实验报告.md转换为HTML和DOCX格式"""
 import re, os
 
-BASE = r'C:\Users\asus\Desktop\数据挖掘\project6_telco_churn'
+BASE = os.path.dirname(os.path.abspath(__file__))
 md_path = os.path.join(BASE, '实验报告.md')
 
 with open(md_path, 'r', encoding='utf-8') as f:

@@ -6,7 +6,7 @@ from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx.enum.shapes import MSO_SHAPE
 import os
 
-BASE = r'C:\Users\asus\Desktop\数据挖掘\project6_telco_churn'
+BASE = os.path.dirname(os.path.abspath(__file__))
 prs = Presentation()
 prs.slide_width = Inches(13.333)  # 16:9 宽屏
 prs.slide_height = Inches(7.5)
@@ -294,11 +294,11 @@ items_woe = [
     '',
     'WOE = ln(好客户占比 / 坏客户占比)',
     '',
-    '→ 原始19维 → 27维特征空间',
+    '→ Base / RFM / WOE / SMOTE分层验证',
 ]
 add_bullet_list(slide, 17, 4.5, 15, 9, items_woe, 14, BLACK)
 
-add_highlight_box(slide, 1.5, 14, 31, 2, '特征工程效果：逻辑回归 AUC 提升 +0.032（0.8035 → 0.8359）', 18, BLUE_LIGHT, BLUE_DARK)
+add_highlight_box(slide, 1.5, 14, 31, 2, '关键控制：WOE仅用训练集拟合；交叉验证中SMOTE只在每个训练折内部执行', 18, BLUE_LIGHT, BLUE_DARK)
 
 # ===================================================================
 # Slide 7: SMOTE
@@ -315,7 +315,8 @@ items_smote = [
     'SMOTE 过采样（Synthetic Minority Oversampling）',
     '在特征空间中为流失样本找k近邻',
     '在近邻之间随机线性插值生成新样本',
-    '仅在训练集上执行，测试集保持原分布',
+    '训练最终模型时仅在训练集上执行，测试集保持原分布',
+    '交叉验证时封装进Pipeline，仅在训练折内部执行',
     '处理后：5,634 → 8,278 样本（1:1 平衡）',
 ]
 add_bullet_list(slide, 1.5, 7, 14, 8, items_smote, 14, BLACK)
@@ -333,7 +334,7 @@ items_why = [
 ]
 add_bullet_list(slide, 17, 7, 15, 8, items_why, 14, BLACK)
 
-add_highlight_box(slide, 1.5, 15.5, 31, 1.5, 'SMOTE效果：流失客户Recall从~40%提升至71.4%（+30个百分点）', 18, BLUE_LIGHT, BLUE_DARK)
+add_highlight_box(slide, 1.5, 15.5, 31, 1.5, '消融结果：SMOTE将Recall从0.4893提升至0.7086，同时F1提升至0.6295', 18, BLUE_LIGHT, BLUE_DARK)
 
 # ===================================================================
 # Slide 8: 模型构建
@@ -359,7 +360,7 @@ add_table_slide(slide, 1.5, 12,
     [
         ['评估指标', 'Accuracy, Precision, Recall, F1, ROC-AUC, PR-AUC'],
         ['验证方法', '5折分层交叉验证（StratifiedKFold, shuffle=True）'],
-        ['数据划分', '80%训练（含SMOTE） / 20%测试（保持原始分布）'],
+        ['数据划分', '80%训练 / 20%测试；CV中SMOTE仅在训练折内执行'],
         ['随机种子', '42（所有实验固定，确保完全可复现）'],
     ], 13)
 
@@ -368,21 +369,21 @@ add_table_slide(slide, 1.5, 12,
 # ===================================================================
 slide = prs.slides.add_slide(prs.slide_layouts[6])
 add_bg(slide, WHITE)
-add_title_bar(slide, '7. 实验结果 — 5折交叉验证（SMOTE训练集）')
+add_title_bar(slide, '7. 实验结果 — 5折交叉验证（折内SMOTE）')
 add_footer(slide, 9)
 
 add_table_slide(slide, 1, 3.5,
     ['模型', 'Accuracy', 'Precision', 'Recall', 'F1', 'ROC-AUC'],
     [
-        ['Logistic Regression', '0.8195 ± 0.0076', '0.7977 ± 0.0076', '0.8562 ± 0.0136', '0.8259 ± 0.0079', '0.9089 ± 0.0039'],
-        ['Random Forest', '0.8384 ± 0.0099', '0.8193 ± 0.0093', '0.8683 ± 0.0150', '0.8430 ± 0.0101', '0.9175 ± 0.0035'],
-        ['XGBoost 🏆', '0.8530 ± 0.0089', '0.8531 ± 0.0077', '0.8529 ± 0.0140', '0.8529 ± 0.0094', '0.9337 ± 0.0040'],
-        ['LightGBM', '0.8524 ± 0.0071', '0.8499 ± 0.0068', '0.8560 ± 0.0097', '0.8529 ± 0.0073', '0.9325 ± 0.0041'],
+        ['Logistic Regression', '0.7650 ± 0.0154', '0.5443 ± 0.0232', '0.7050 ± 0.0347', '0.6141 ± 0.0257', '0.8349 ± 0.0128'],
+        ['Random Forest 🏆', '0.7772 ± 0.0112', '0.5657 ± 0.0173', '0.6903 ± 0.0419', '0.6214 ± 0.0243', '0.8393 ± 0.0095'],
+        ['XGBoost', '0.7790 ± 0.0046', '0.5866 ± 0.0118', '0.5686 ± 0.0186', '0.5771 ± 0.0089', '0.8210 ± 0.0060'],
+        ['LightGBM', '0.7796 ± 0.0093', '0.5852 ± 0.0159', '0.5793 ± 0.0364', '0.5819 ± 0.0247', '0.8229 ± 0.0054'],
     ], 14)
 
-add_textbox(slide, 1.5, 12, 31, 1.5, '📌 XGBoost在平衡训练集上最优（ROC-AUC=0.9337），集成学习优势明显', 18, True, BLUE_DARK)
+add_textbox(slide, 1.5, 12, 31, 1.5, '📌 折内SMOTE后，随机森林CV ROC-AUC最高（0.8393），结果更接近真实泛化表现', 18, True, BLUE_DARK)
 
-add_textbox(slide, 1.5, 14, 31, 2, '但！真实场景的测试集仍是不平衡的，让我们看测试集结果 →', 16, False, ORANGE, PP_ALIGN.CENTER)
+add_textbox(slide, 1.5, 14, 31, 2, '测试集始终保持原始不平衡分布，用于检验真实业务泛化能力 →', 16, False, ORANGE, PP_ALIGN.CENTER)
 
 # ===================================================================
 # Slide 10: 测试集结果（核心页）
@@ -395,18 +396,18 @@ add_footer(slide, 10)
 add_table_slide(slide, 1, 3.5,
     ['模型', 'Accuracy', 'Precision', 'Recall', 'F1', 'ROC-AUC', 'PR-AUC'],
     [
-        ['Logistic Regression', '0.7594', '0.5362', '0.6925', '0.6044', '0.8359', '0.6587'],
-        ['Random Forest 🏆', '0.7821', '0.5717', '0.7139', '0.6350', '0.8382', '0.6527'],
-        ['XGBoost', '0.7779', '0.5788', '0.5989', '0.5887', '0.8220', '0.6313'],
-        ['LightGBM', '0.7764', '0.5774', '0.5882', '0.5828', '0.8220', '0.6353'],
+        ['Logistic Regression', '0.7622', '0.5404', '0.6979', '0.6091', '0.8364', '0.6582'],
+        ['Random Forest 🏆', '0.7786', '0.5662', '0.7086', '0.6295', '0.8386', '0.6509'],
+        ['XGBoost', '0.7814', '0.5878', '0.5909', '0.5893', '0.8245', '0.6353'],
+        ['LightGBM', '0.7743', '0.5737', '0.5829', '0.5782', '0.8217', '0.6273'],
     ], 14)
 
 add_textbox(slide, 1.5, 11.5, 31, 1, '关键发现', 22, True, BLUE_DARK)
 
 items_findings = [
-    '✅ 最优模型：随机森林 — ROC-AUC=0.8382，Recall=0.7139（能识别71.4%的流失客户）',
-    '✅ XGBoost/LightGBM在平衡训练集上过拟合，真实数据上泛化略逊于随机森林',
-    '✅ 逻辑回归在RFM+WOE加持下召回率达0.6925，且模型最简单',
+    '✅ 最优模型：随机森林 — ROC-AUC=0.8386，Recall=0.7086（能识别70.9%的流失客户）',
+    '✅ XGBoost/LightGBM准确率略高，但召回率明显低于随机森林',
+    '✅ 逻辑回归在RFM+WOE加持下召回率达0.6979，且模型最简单',
     '✅ 所有模型PR-AUC远超随机基线（0.27），验证了模型的实用价值',
 ]
 add_bullet_list(slide, 1.5, 13, 31, 5, items_findings, 16, BLACK)
@@ -445,11 +446,11 @@ add_textbox(slide, 1.5, 3, 14, 1, 'SHAP 特征重要性 Top-5', 20, True, BLUE_D
 add_table_slide(slide, 1.5, 4.5,
     ['排名', '特征', 'SHAP值', '业务解读'],
     [
-        ['1', 'tenure_WOE', '0.0592', '在网时长非线性影响最大'],
-        ['2', 'RFM_Total', '0.0592', 'RFM综合评分联合效应'],
-        ['3', 'MonthlyCharges', '0.0557', '高消费客户流失倾向略高'],
-        ['4', 'PaymentMethod', '0.0557', '电子支票支付者风险偏高'],
-        ['5', 'InternetService', '0.0271', '光纤用户流失率>DSL用户'],
+        ['1', 'PaymentMethod', '0.0566', '电子支票支付者风险偏高'],
+        ['2', 'MonthlyCharges', '0.0566', '高消费客户流失倾向略高'],
+        ['3', 'RFM_Total', '0.0552', 'RFM综合评分联合效应'],
+        ['4', 'tenure_WOE', '0.0552', '在网时长非线性影响明显'],
+        ['5', 'InternetService', '0.0272', '光纤用户流失率>DSL用户'],
     ], 11)
 
 # 右侧：聚类
@@ -464,33 +465,33 @@ add_table_slide(slide, 17, 4.5,
     ], 10)
 
 # 底部结论
-add_highlight_box(slide, 1.5, 14, 31, 2.5, '聚类质量：Silhouette Score = 0.xx  |  DBSCAN额外识别异常客户  |  四类客户需差异化运营策略', 16, BLUE_LIGHT, BLUE_DARK)
+add_highlight_box(slide, 1.5, 14, 31, 2.5, '聚类质量：Silhouette Score = 0.4048  |  DBSCAN识别108个噪声点  |  四类客户需差异化运营策略', 16, BLUE_LIGHT, BLUE_DARK)
 
 # ===================================================================
 # Slide 13: 消融实验
 # ===================================================================
 slide = prs.slides.add_slide(prs.slide_layouts[6])
 add_bg(slide, WHITE)
-add_title_bar(slide, '7. 消融实验 — 验证特征工程有效性')
+add_title_bar(slide, '7. 消融实验 — 验证模块贡献')
 add_footer(slide, 13)
 
-add_textbox(slide, 1.5, 3.5, 31, 1.5, '对比实验：原始特征(19维) vs 原始+RFM+WOE(27维)', 20, False, GRAY)
+add_textbox(slide, 1.5, 3.5, 31, 1.5, '对比实验：Base vs RFM vs WOE vs SMOTE（随机森林，同一训练/测试划分）', 20, False, GRAY)
 
 add_table_slide(slide, 2, 5.5,
-    ['实验条件', 'Logistic Regression AUC', 'Random Forest AUC', '提升'],
+    ['实验条件', 'Accuracy', 'Precision', 'Recall', 'F1'],
     [
-        ['原始特征（19维）', '0.8035', '0.8221', '—（基线）'],
-        ['+ RFM特征（23维）', '0.8201 (+0.017)', '0.8289 (+0.007)', 'RFM贡献'],
-        ['+ WOE编码（27维）', '0.8359 (+0.032)', '0.8382 (+0.016)', 'WOE贡献'],
-        ['+ SMOTE过采样', 'Recall: 0.45→0.69', 'Recall: 0.48→0.71', 'SMOTE贡献'],
+        ['Base', '0.8013', '0.6632', '0.5107', '0.5770'],
+        ['Base+RFM', '0.7984', '0.6630', '0.4893', '0.5631'],
+        ['Base+RFM+WOE', '0.7956', '0.6536', '0.4893', '0.5596'],
+        ['Base+RFM+WOE+SMOTE', '0.7786', '0.5662', '0.7086', '0.6295'],
     ], 14)
 
 add_textbox(slide, 2, 12.5, 30, 5,
     '结论：\n'
-    '• RFM特征对逻辑回归提升最大（+0.017），因为线性模型需要人工构建非线性特征\n'
-    '• WOE分箱进一步提升了逻辑回归（+0.015），验证了证据权重编码的有效性\n'
-    '• SMOTE是Recall提升的关键（+25个百分点），比特征工程对召回率的贡献更大\n'
-    '• 随机森林本身具有非线性能力，特征工程收益相对较小但仍有正向贡献',
+    '• RFM/WOE在随机森林上没有明显提升AUC，说明树模型已能捕捉较多非线性关系\n'
+    '• SMOTE是Recall提升的关键：0.4893 → 0.7086\n'
+    '• F1从0.5596提升到0.6295，更符合流失预警的业务目标\n'
+    '• RFM/WOE仍提供可解释的业务特征，便于报告和策略落地',
     15, False, BLACK)
 
 # ===================================================================
@@ -540,9 +541,9 @@ add_footer(slide, 15)
 add_textbox(slide, 1.5, 3, 14, 1, '主要贡献', 24, True, BLUE_DARK)
 items_contrib = [
     '✅ 完整的数据挖掘全流程（EDA→预处理→特征工程→建模→评估→解释→应用）',
-    '✅ 随机森林最优：ROC-AUC=0.8382，Recall=0.7139',
-    '✅ RFM+WOE特征工程为线性模型带来+0.032 AUC提升',
-    '✅ SMOTE将流失客户召回率提升约30个百分点',
+    '✅ 随机森林最优：ROC-AUC=0.8386，Recall=0.7086',
+    '✅ 交叉验证使用折内SMOTE Pipeline，避免验证集泄漏',
+    '✅ SMOTE将Recall从0.4893提升到0.7086',
     '✅ 4类客户聚类画像 + 6大业务策略建议',
 ]
 add_bullet_list(slide, 1.5, 4.5, 14, 8, items_contrib, 14, BLACK)
