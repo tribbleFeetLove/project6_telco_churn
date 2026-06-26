@@ -1,11 +1,15 @@
-# 实验输出
-experiments/
-*.png
-*.csv
+# 临时实验输出
+*.log
 
-# 模型文件
-models/best_model.pkl
-*.pkl
+# Codex/agent 工作过程记录
+findings.md
+progress.md
+task_plan.md
+
+# 文档生成脚本（交付物只保留报告/PPT本体）
+build_report.py
+build_ppt.py
+convert_report.py
 
 # Python 缓存
 __pycache__/
@@ -16,15 +20,6 @@ __pycache__/
 # Jupyter 检查点
 .ipynb_checkpoints/
 
-# 生成的报告
-实验报告.docx
-实验报告.pdf
-实验报告.md
-答辩PPT.pptx
-
-# 日志
-*.log
-
 # IDE
 .vscode/
 .idea/
@@ -33,3 +28,7 @@ __pycache__/
 .env
 venv/
 .venv/
+
+# 临时文件
+*.tmp
+tmp/

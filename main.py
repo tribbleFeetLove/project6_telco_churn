@@ -2,8 +2,11 @@
 电信客户流失预测与价值细分系统 — 完整分析脚本
 可直接运行: python main.py
 """
-import os, sys, warnings, json, yaml, logging
+import argparse, os, sys, warnings, json, yaml, logging
 warnings.filterwarnings('ignore')
+
+EXPERIMENTS_DIR = './experiments'
+os.makedirs(EXPERIMENTS_DIR, exist_ok=True)
 
 import numpy as np
 import pandas as pd
@@ -11,7 +14,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
+from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
@@ -21,12 +24,15 @@ from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans, DBSCAN
 import xgboost as xgb
 import lightgbm as lgb
-from imblearn.over_sampling import SMOTE
 import shap
 import joblib
 
-from utils.data_utils import set_random_seed, split_data, apply_smote
-from utils.model_utils import save_model
+from utils.data_utils import add_woe_features, set_random_seed, split_data, apply_smote
+from utils.model_utils import (
+    cross_validate_with_smote,
+    run_ablation_experiments,
+    save_model,
+)
 from utils.visualization import setup_plot_style
 
 # ===== 日志配置 =====
@@ -42,7 +48,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ===== 加载配置 =====
-config_path = './configs/default.yaml'
+parser = argparse.ArgumentParser(description='运行电信客户流失预测完整训练流程')
+parser.add_argument('--config', default='./configs/default.yaml', help='YAML配置文件路径')
+args, _ = parser.parse_known_args()
+config_path = args.config
 if os.path.exists(config_path):
     with open(config_path, 'r', encoding='utf-8') as f:
         cfg = yaml.safe_load(f)
@@ -162,7 +171,7 @@ for col in df.select_dtypes(include=['object']).columns:
     df[col] = LabelEncoder().fit_transform(df[col].astype(str))
 
 # ===== 3. 特征工程 =====
-logger.info("[3/10] 特征工程 (RFM + WOE)...")
+logger.info("[3/10] 特征工程 (RFM)...")
 # RFM
 df['R_Score'] = 1 / (df['tenure'] + 1)
 svc_cols = ['PhoneService', 'MultipleLines', 'InternetService', 'OnlineSecurity',
@@ -170,22 +179,6 @@ svc_cols = ['PhoneService', 'MultipleLines', 'InternetService', 'OnlineSecurity'
 df['F_Score'] = sum((df[c] > 0).astype(int) for c in svc_cols if c in df.columns)
 df['M_Score'] = df['MonthlyCharges']
 df['RFM_Total'] = df['R_Score'] + df['F_Score'] / 9 + df['M_Score'] / df['M_Score'].max()
-
-# WOE
-def compute_woe(feature, target, n_bins=10):
-    df_t = pd.DataFrame({'f': feature, 't': target})
-    if df_t['f'].nunique() > n_bins:
-        df_t['bin'] = pd.qcut(df_t['f'], q=n_bins, duplicates='drop')
-    else:
-        df_t['bin'] = df_t['f']
-    g = df_t.groupby('bin').agg(good=('t', lambda x: (x==0).sum()), bad=('t', lambda x: (x==1).sum()))
-    tg, tb = (target==0).sum(), (target==1).sum()
-    g['woe'] = np.log((g['good']/tg + 1e-6) / (g['bad']/tb + 1e-6))
-    return df_t['bin'].map(g['woe'])
-
-woe_bins = cfg.get('feature_engineering', {}).get('woe_bins', 10)
-for col in ['tenure', 'MonthlyCharges', 'TotalCharges']:
-    df[f'{col}_WOE'] = compute_woe(df[col], df['Churn'], n_bins=woe_bins)
 
 for col in df.columns:
     if df[col].dtype.name == 'category':
@@ -195,11 +188,35 @@ logger.info(f"  特征工程后: {df.shape[1]} 个特征")
 
 # ===== 4. 数据划分与SMOTE =====
 logger.info("[4/10] 数据划分与SMOTE过采样...")
-X = df.drop('Churn', axis=1)
+X_base = df_raw.copy()
+X_base.drop('customerID', axis=1, inplace=True)
+X_base['TotalCharges'] = pd.to_numeric(X_base['TotalCharges'], errors='coerce')
+if missing_strategy == 'median':
+    X_base['TotalCharges'].fillna(X_base['TotalCharges'].median(), inplace=True)
+else:
+    X_base['TotalCharges'].fillna(X_base['TotalCharges'].mean(), inplace=True)
+for col in X_base.select_dtypes(include=['object']).columns:
+    if col != 'Churn':
+        X_base[col] = LabelEncoder().fit_transform(X_base[col].astype(str))
+X_base = X_base.drop('Churn', axis=1).fillna(0)
+
+X_rfm = df.drop('Churn', axis=1)
 y = df['Churn']
 train_ratio = cfg.get('data', {}).get('train_ratio', 0.8)
-X_train, X_test, y_train, y_test = split_data(
-    X, y, train_ratio=train_ratio, random_state=RANDOM_STATE)
+X_base_train, X_base_test, y_train, y_test = split_data(
+    X_base, y, train_ratio=train_ratio, random_state=RANDOM_STATE)
+X_rfm_train = X_rfm.loc[X_base_train.index].copy()
+X_rfm_test = X_rfm.loc[X_base_test.index].copy()
+
+woe_bins = cfg.get('feature_engineering', {}).get('woe_bins', 10)
+X_train, X_test = add_woe_features(
+    X_rfm_train,
+    X_rfm_test,
+    y_train,
+    columns=['tenure', 'MonthlyCharges', 'TotalCharges'],
+    n_bins=woe_bins,
+)
+logger.info(f"  WOE特征已基于训练集拟合，当前特征数: {X_train.shape[1]}")
 
 X_train_smote, y_train_smote = apply_smote(X_train, y_train, random_state=RANDOM_STATE)
 X_train_smote = safe_fillna(X_train_smote)
@@ -217,10 +234,65 @@ cv_rows = []
 for name, model in models.items():
     row = {'Model': name}
     for metric in ['accuracy', 'precision', 'recall', 'f1', 'roc_auc']:
-        scores = cross_val_score(model, X_train_smote, y_train_smote, cv=cv, scoring=metric, n_jobs=-1)
+        scores = cross_validate_with_smote(
+            model,
+            X_train,
+            y_train,
+            cv=cv,
+            metric=metric,
+            random_state=RANDOM_STATE,
+            n_jobs=-1,
+        )
         row[metric] = f"{scores.mean():.4f}±{scores.std():.4f}"
         logger.info(f"  {name:<22s} {metric}: {scores.mean():.4f} ± {scores.std():.4f}")
     cv_rows.append(row)
+
+cv_df = pd.DataFrame(cv_rows).set_index('Model')
+cv_df.to_csv(f'{EXPERIMENTS_DIR}/cv_results.csv')
+
+logger.info("[6b/10] 消融实验...")
+ablation_model = RandomForestClassifier(
+    n_estimators=200,
+    max_depth=10,
+    min_samples_split=10,
+    min_samples_leaf=5,
+    random_state=RANDOM_STATE,
+    n_jobs=-1,
+)
+ablation_df = run_ablation_experiments(
+    {
+        'Base': {
+            'X_train': X_base_train,
+            'X_test': X_base_test,
+            'features': 'Original encoded features',
+            'use_smote': False,
+        },
+        'Base+RFM': {
+            'X_train': X_rfm_train,
+            'X_test': X_rfm_test,
+            'features': 'Original + RFM',
+            'use_smote': False,
+        },
+        'Base+RFM+WOE': {
+            'X_train': X_train,
+            'X_test': X_test,
+            'features': 'Original + RFM + WOE',
+            'use_smote': False,
+        },
+        'Base+RFM+WOE+SMOTE': {
+            'X_train': X_train,
+            'X_test': X_test,
+            'features': 'Original + RFM + WOE',
+            'use_smote': True,
+        },
+    },
+    y_train,
+    y_test,
+    base_model=ablation_model,
+    random_state=RANDOM_STATE,
+)
+ablation_df.to_csv(f'{EXPERIMENTS_DIR}/ablation_results.csv')
+logger.info(f"消融实验结果:\n{ablation_df.to_string()}")
 
 # ===== 7. 训练与评估 =====
 logger.info("[7/10] 训练模型与测试集评估...")
@@ -291,14 +363,19 @@ best_model = all_results[best_name]['model']
 if hasattr(best_model, 'feature_importances_'):
     imp = best_model.feature_importances_
     idx = np.argsort(imp)[-15:]
+    feature_names = X_train.columns
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.barh(range(15), imp[idx][::-1], color=plt.cm.Blues(np.linspace(0.4, 0.9, 15))[::-1], edgecolor='white')
-    ax.set_yticks(range(15)); ax.set_yticklabels(X.columns[idx][::-1])
+    ax.set_yticks(range(15)); ax.set_yticklabels(feature_names[idx][::-1])
     ax.set_title(f'Feature Importance ({best_name})'); ax.set_xlabel('Importance')
     plt.tight_layout(); plt.savefig(f'{EXPERIMENTS_DIR}/feature_importance.png', dpi=150); plt.close()
 
 logger.info(f"  最佳模型: {best_name} (ROC-AUC={all_results[best_name]['roc_auc']:.4f})")
 save_model(best_model, './models/best_model.pkl')
+joblib.dump(
+    {'model': best_model, 'feature_names': X_train.columns.tolist()},
+    './models/best_model_with_features.pkl',
+)
 
 # ===== 9. SHAP分析 =====
 logger.info("[9/10] SHAP可解释性分析...")
@@ -365,6 +442,17 @@ cluster_profile = df.groupby('Cluster')[['tenure', 'MonthlyCharges', 'TotalCharg
 cluster_profile['Size'] = cl_counts.values
 
 comp_df.to_csv(f'{EXPERIMENTS_DIR}/model_comparison.csv')
+ablation_plot = ablation_df[['ROC_AUC', 'Recall', 'F1']]
+fig, ax = plt.subplots(figsize=(10, 5))
+ablation_plot.plot(kind='bar', ax=ax)
+ax.set_ylim(0, 1.0)
+ax.set_title('Ablation Study')
+ax.set_ylabel('Score')
+ax.grid(axis='y', alpha=0.3)
+plt.xticks(rotation=20, ha='right')
+plt.tight_layout()
+plt.savefig(f'{EXPERIMENTS_DIR}/ablation_results.png', dpi=150)
+plt.close()
 df[['Cluster'] + cluster_features].to_csv(f'{EXPERIMENTS_DIR}/cluster_results.csv', index=False)
 shap_mean = np.abs(shap_vals).mean(axis=0)
 if shap_mean.ndim > 1:
@@ -392,6 +480,6 @@ for i in range(n_clusters):
     logger.info(f"  Cluster {i}: {cluster_profile.loc[i, 'Size']:.0f}人, 流失率={churn_r:.2%}, 月费=${cluster_profile.loc[i, 'MonthlyCharges']:.1f}")
 
 logger.info(f"模型对比表:\n{comp_df.to_string()}")
-logger.info(f"✓ 最佳模型: ./models/best_model.pkl")
-logger.info(f"✓ 实验结果: {EXPERIMENTS_DIR}/")
+logger.info("OK 最佳模型: ./models/best_model.pkl")
+logger.info(f"OK 实验结果: {EXPERIMENTS_DIR}/")
 logger.info("Done!")

@@ -378,6 +378,99 @@ def compute_woe_binning(df: pd.DataFrame,
     return woe_series.astype(float), bin_info
 
 
+def add_woe_features(X_train: pd.DataFrame,
+                     X_test: pd.DataFrame,
+                     y_train: pd.Series,
+                     columns: List[str],
+                     n_bins: int = 10) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """在训练集上拟合WOE分箱，并映射到训练集和测试集。
+
+    WOE使用目标变量统计，必须只使用训练集标签拟合；测试集只能使用
+    训练集得到的分箱边界和WOE映射，避免将测试标签泄漏到特征中。
+
+    Parameters
+    ----------
+    X_train : pd.DataFrame
+        训练集特征
+    X_test : pd.DataFrame
+        测试集特征
+    y_train : pd.Series
+        训练集标签
+    columns : List[str]
+        需要进行WOE编码的列
+    n_bins : int, default=10
+        数值特征的等频分箱数量
+
+    Returns
+    -------
+    Tuple[pd.DataFrame, pd.DataFrame]
+        添加WOE特征后的训练集和测试集
+    """
+    X_train_woe = X_train.copy()
+    X_test_woe = X_test.copy()
+
+    for col in columns:
+        if col not in X_train_woe.columns:
+            continue
+
+        train_feature = X_train_woe[col]
+        test_feature = X_test_woe[col]
+        target = y_train.reset_index(drop=True)
+        train_values = train_feature.reset_index(drop=True)
+
+        use_binning = train_values.nunique(dropna=True) > n_bins
+        if use_binning:
+            try:
+                _, bin_edges = pd.qcut(
+                    train_values,
+                    q=n_bins,
+                    retbins=True,
+                    duplicates='drop',
+                )
+                if len(bin_edges) < 2:
+                    use_binning = False
+                else:
+                    bin_edges[0] = -np.inf
+                    bin_edges[-1] = np.inf
+                    train_bins = pd.cut(
+                        train_values,
+                        bins=bin_edges,
+                        include_lowest=True,
+                    )
+                    test_bins = pd.cut(
+                        test_feature,
+                        bins=bin_edges,
+                        include_lowest=True,
+                    )
+            except ValueError:
+                use_binning = False
+
+        if not use_binning:
+            train_bins = train_values
+            test_bins = test_feature
+
+        woe_frame = pd.DataFrame({'bin': train_bins, 'target': target})
+        grouped = woe_frame.groupby('bin', observed=False).agg(
+            good=('target', lambda x: (x == 0).sum()),
+            bad=('target', lambda x: (x == 1).sum()),
+        )
+
+        total_good = (target == 0).sum()
+        total_bad = (target == 1).sum()
+        grouped['woe'] = np.log(
+            (grouped['good'] / total_good + 1e-6) /
+            (grouped['bad'] / total_bad + 1e-6)
+        )
+
+        woe_map = grouped['woe'].to_dict()
+        train_woe = pd.Series(train_bins).map(woe_map).astype(float).fillna(0)
+        test_woe = pd.Series(test_bins).map(woe_map).astype(float).fillna(0)
+        X_train_woe[f'{col}_WOE'] = train_woe.values
+        X_test_woe[f'{col}_WOE'] = test_woe.values
+
+    return X_train_woe, X_test_woe
+
+
 def split_data(X: pd.DataFrame,
                y: pd.Series,
                train_ratio: float = 0.8,

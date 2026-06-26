@@ -16,6 +16,9 @@ from sklearn.metrics import (
     classification_report, roc_curve, precision_recall_curve
 )
 from sklearn.model_selection import StratifiedKFold, cross_validate, GridSearchCV
+from sklearn.base import clone
+from imblearn.over_sampling import SMOTE
+from imblearn.pipeline import Pipeline
 import xgboost as xgb
 import lightgbm as lgb
 import joblib
@@ -24,6 +27,92 @@ import os
 import warnings
 
 warnings.filterwarnings('ignore')
+
+
+def build_smote_pipeline(model: Any, random_state: int = 42) -> Pipeline:
+    """构建交叉验证专用SMOTE流水线。
+
+    将SMOTE放入Pipeline后，过采样只会在每个训练折内部执行，
+    验证折不会参与合成样本生成，避免交叉验证泄漏。
+    """
+    return Pipeline([
+        ('smote', SMOTE(random_state=random_state)),
+        ('model', clone(model)),
+    ])
+
+
+def cross_validate_with_smote(model: Any,
+                              X: pd.DataFrame,
+                              y: pd.Series,
+                              cv: StratifiedKFold,
+                              metric: str,
+                              random_state: int = 42,
+                              n_jobs: int = -1) -> np.ndarray:
+    """使用折内SMOTE Pipeline执行交叉验证。"""
+    pipeline = build_smote_pipeline(model, random_state=random_state)
+    scores = cross_validate(
+        pipeline,
+        X,
+        y,
+        cv=cv,
+        scoring={metric: metric},
+        n_jobs=n_jobs,
+    )
+    return scores[f'test_{metric}']
+
+
+def run_ablation_experiments(experiments: Dict[str, Dict[str, Any]],
+                             y_train: pd.Series,
+                             y_test: pd.Series,
+                             base_model: Any,
+                             random_state: int = 42) -> pd.DataFrame:
+    """运行特征工程与SMOTE消融实验。
+
+    Parameters
+    ----------
+    experiments : Dict[str, Dict[str, Any]]
+        每个实验包含 `X_train`、`X_test` 和 `use_smote`。
+    y_train : pd.Series
+        训练标签。
+    y_test : pd.Series
+        测试标签。
+    base_model : Any
+        用于所有消融组的基础模型。
+    random_state : int, default=42
+        随机种子。
+
+    Returns
+    -------
+    pd.DataFrame
+        各消融组测试集指标。
+    """
+    rows = []
+    for name, data in experiments.items():
+        model = clone(base_model)
+        X_train_exp = data['X_train']
+        y_train_exp = y_train
+
+        if data.get('use_smote', False):
+            smote = SMOTE(random_state=random_state)
+            X_train_exp, y_train_exp = smote.fit_resample(X_train_exp, y_train)
+
+        model.fit(X_train_exp, y_train_exp)
+        y_pred = model.predict(data['X_test'])
+        y_prob = model.predict_proba(data['X_test'])[:, 1]
+
+        rows.append({
+            'Experiment': name,
+            'Features': data.get('features', ''),
+            'SMOTE': data.get('use_smote', False),
+            'Accuracy': accuracy_score(y_test, y_pred),
+            'Precision': precision_score(y_test, y_pred, zero_division=0),
+            'Recall': recall_score(y_test, y_pred, zero_division=0),
+            'F1': f1_score(y_test, y_pred, zero_division=0),
+            'ROC_AUC': roc_auc_score(y_test, y_prob),
+            'PR_AUC': average_precision_score(y_test, y_prob),
+        })
+
+    return pd.DataFrame(rows).set_index('Experiment')
 
 
 def build_model(model_name: str, params: Optional[Dict[str, Any]] = None,

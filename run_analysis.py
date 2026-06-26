@@ -1,5 +1,11 @@
 import matplotlib
 matplotlib.use("Agg")
+import sys
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+except AttributeError:
+    pass
 # ============================================================
 # 2. 环境配置与依赖导入
 # ============================================================
@@ -13,7 +19,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ---- 机器学习 ----
-from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score, GridSearchCV
+from sklearn.model_selection import train_test_split, StratifiedKFold, GridSearchCV
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, LabelEncoder
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
@@ -45,6 +51,9 @@ import shap
 # ---- 工具 ----
 import joblib
 from tqdm import tqdm
+
+from utils.data_utils import add_woe_features
+from utils.model_utils import cross_validate_with_smote, run_ablation_experiments
 
 # ---- 设置中文字体 ----
 matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
@@ -304,7 +313,7 @@ for feat, corr_val in churn_corr.head(10).items():
     direction = '正相关' if corr_val > 0 else '负相关'
     print(f"  {feat:<25s}: {corr_val:+.4f} ({direction})")
 
-# ---- 特征工程: RFM + WOE ----
+# ---- 特征工程: RFM ----
 df_fe = df.copy()
 y = df_fe['Churn']
 
@@ -342,53 +351,51 @@ print(f"  F_Score (频率):   mean={df_fe['F_Score'].mean():.2f}")
 print(f"  M_Score (金额):   mean={df_fe['M_Score'].mean():.2f}")
 print(f"  RFM_Total:        mean={df_fe['RFM_Total'].mean():.4f}")
 
-# ---- WOE分箱对关键特征 ----
-def compute_woe(feature, target, n_bins=10):
-    """计算单个特征的WOE编码"""
-    df_temp = pd.DataFrame({'feature': feature, 'target': target})
-    if df_temp['feature'].nunique() > n_bins:
-        df_temp['bin'] = pd.qcut(df_temp['feature'], q=n_bins, duplicates='drop')
-    else:
-        df_temp['bin'] = df_temp['feature']
-    
-    grouped = df_temp.groupby('bin').agg(
-        good=('target', lambda x: (x == 0).sum()),
-        bad=('target', lambda x: (x == 1).sum())
-    )
-    total_good = (target == 0).sum()
-    total_bad = (target == 1).sum()
-    
-    grouped['good_pct'] = grouped['good'] / total_good
-    grouped['bad_pct'] = grouped['bad'] / total_bad
-    grouped['good_pct'] = grouped['good_pct'].replace(0, 1e-6)
-    grouped['bad_pct'] = grouped['bad_pct'].replace(0, 1e-6)
-    grouped['WOE'] = np.log(grouped['good_pct'] / grouped['bad_pct'])
-    
-    woe_map = grouped['WOE'].to_dict()
-    return df_temp['bin'].map(woe_map), grouped
+print("WOE编码将在训练/测试划分后仅使用训练集拟合，避免标签泄漏")
+print(f"\nRFM特征工程后特征数: {df_fe.shape[1]}")
 
-# 对关键数值特征进行WOE编码
-woe_features = ['tenure', 'MonthlyCharges', 'TotalCharges']
-for col in woe_features:
-    if col in df_fe.columns:
-        woe_series, woe_info = compute_woe(df_fe[col], y, n_bins=10)
-        df_fe[f'{col}_WOE'] = woe_series
-        print(f"✓ WOE编码: {col} -> {col}_WOE")
+X_base = df_raw.copy()
+if 'customerID' in X_base.columns:
+    X_base.drop('customerID', axis=1, inplace=True)
+X_base['TotalCharges'] = pd.to_numeric(X_base['TotalCharges'], errors='coerce')
+X_base['TotalCharges'].fillna(X_base['TotalCharges'].median(), inplace=True)
+for col in X_base.select_dtypes(include=['object']).columns:
+    if col != 'Churn':
+        X_base[col] = LabelEncoder().fit_transform(X_base[col].astype(str))
+X_base = X_base.drop('Churn', axis=1).fillna(0)
 
-print(f"\n特征工程后特征数: {df_fe.shape[1]}")
-
-# ---- 特征重要性预分析 ----
 X_all = df_fe.drop('Churn', axis=1)
 y_all = df_fe['Churn']
 
-# 使用随机森林快速评估
-rf_pre = RandomForestClassifier(n_estimators=100, max_depth=8, 
-                                random_state=RANDOM_STATE, n_jobs=-1)
-rf_pre.fit(X_all, y_all)
+# ---- 数据划分 ----
+X_base_train, X_base_test, y_train, y_test = train_test_split(
+    X_base, y_all, test_size=0.2, random_state=RANDOM_STATE, stratify=y_all
+)
+X_rfm_train = X_all.loc[X_base_train.index].copy()
+X_rfm_test = X_all.loc[X_base_test.index].copy()
 
-# 排序显示
+print(f"训练集: {X_base_train.shape[0]} 样本 (流失率: {y_train.mean():.2%})")
+print(f"测试集: {X_base_test.shape[0]} 样本 (流失率: {y_test.mean():.2%})")
+
+# ---- WOE分箱对关键特征 ----
+woe_features = ['tenure', 'MonthlyCharges', 'TotalCharges']
+X_train, X_test = add_woe_features(
+    X_rfm_train,
+    X_rfm_test,
+    y_train,
+    columns=woe_features,
+    n_bins=10,
+)
+print("✓ WOE编码完成: 仅用训练集拟合分箱和WOE映射")
+print(f"建模特征数: {X_train.shape[1]}")
+
+# ---- 特征重要性预分析 ----
+rf_pre = RandomForestClassifier(n_estimators=100, max_depth=8,
+                                random_state=RANDOM_STATE, n_jobs=-1)
+rf_pre.fit(X_train, y_train)
+
 importance_df = pd.DataFrame({
-    'Feature': X_all.columns,
+    'Feature': X_train.columns,
     'Importance': rf_pre.feature_importances_
 }).sort_values('Importance', ascending=False).head(20)
 
@@ -398,7 +405,8 @@ plt.barh(range(len(importance_df)), importance_df['Importance'].values[::-1],
          color=colors[::-1], edgecolor='white')
 plt.yticks(range(len(importance_df)), importance_df['Feature'].values[::-1])
 plt.xlabel('Feature Importance', fontsize=12)
-plt.title('Random Forest Feature Importance (Top 20)', fontsize=14, fontweight='bold')
+plt.title('Random Forest Feature Importance on Training Set (Top 20)',
+          fontsize=14, fontweight='bold')
 plt.tight_layout()
 plt.savefig('./experiments/feature_importance_preliminary.png', dpi=150, bbox_inches='tight')
 plt.show()
@@ -406,14 +414,6 @@ plt.show()
 print("Top-10 重要特征:")
 for i, row in importance_df.head(10).iterrows():
     print(f"  {row['Feature']:<30s}: {row['Importance']:.6f}")
-
-# ---- 数据划分 ----
-X_train, X_test, y_train, y_test = train_test_split(
-    X_all, y_all, test_size=0.2, random_state=RANDOM_STATE, stratify=y_all
-)
-
-print(f"训练集: {X_train.shape[0]} 样本 (流失率: {y_train.mean():.2%})")
-print(f"测试集: {X_test.shape[0]} 样本 (流失率: {y_test.mean():.2%})")
 
 # ---- SMOTE过采样 ----
 print(f"\nSMOTE处理前:")
@@ -494,8 +494,15 @@ print("=" * 80)
 for name, model in models.items():
     cv_scores = {}
     for metric in scoring_metrics:
-        scores = cross_val_score(model, X_train_smote, y_train_smote,
-                                cv=cv, scoring=metric, n_jobs=-1)
+        scores = cross_validate_with_smote(
+            model,
+            X_train,
+            y_train,
+            cv=cv,
+            metric=metric,
+            random_state=RANDOM_STATE,
+            n_jobs=-1,
+        )
         cv_scores[metric] = {'mean': scores.mean(), 'std': scores.std()}
     cv_results[name] = cv_scores
     
@@ -515,6 +522,48 @@ cv_df = pd.DataFrame(cv_comparison)
 print(f"\n{'='*80}")
 print("\n交叉验证汇总表:")
 print(cv_df.set_index('Model'))
+cv_df.to_csv('./experiments/cv_results.csv', index=False)
+
+# ---- 消融实验 ----
+ablation_model = RandomForestClassifier(
+    n_estimators=200, max_depth=10, min_samples_split=10,
+    min_samples_leaf=5, random_state=RANDOM_STATE, n_jobs=-1
+)
+ablation_df = run_ablation_experiments(
+    {
+        'Base': {
+            'X_train': X_base_train,
+            'X_test': X_base_test,
+            'features': 'Original encoded features',
+            'use_smote': False,
+        },
+        'Base+RFM': {
+            'X_train': X_rfm_train,
+            'X_test': X_rfm_test,
+            'features': 'Original + RFM',
+            'use_smote': False,
+        },
+        'Base+RFM+WOE': {
+            'X_train': X_train,
+            'X_test': X_test,
+            'features': 'Original + RFM + WOE',
+            'use_smote': False,
+        },
+        'Base+RFM+WOE+SMOTE': {
+            'X_train': X_train,
+            'X_test': X_test,
+            'features': 'Original + RFM + WOE',
+            'use_smote': True,
+        },
+    },
+    y_train,
+    y_test,
+    base_model=ablation_model,
+    random_state=RANDOM_STATE,
+)
+print("\n消融实验结果:")
+print(ablation_df.round(4).to_string())
+ablation_df.to_csv('./experiments/ablation_results.csv')
 
 # ---- 模型训练与测试集评估 ----
 all_results = {}
@@ -729,9 +778,12 @@ plt.show()
 
 # ---- SHAP特征重要性排序 ----
 shap_importance = np.abs(shap_values).mean(axis=0)
+if shap_importance.ndim > 1:
+    shap_importance = shap_importance.flatten()
+n_show = min(len(X_sample.columns), len(shap_importance))
 shap_importance_df = pd.DataFrame({
-    'Feature': X_sample.columns,
-    'SHAP_Importance': shap_importance
+    'Feature': X_sample.columns[:n_show],
+    'SHAP_Importance': shap_importance[:n_show]
 }).sort_values('SHAP_Importance', ascending=False)
 
 print("SHAP特征重要性 Top-15:")
@@ -992,6 +1044,20 @@ print("保存实验结果...")
 # 保存模型对比表
 comparison_df.to_csv('./experiments/model_comparison.csv')
 print("✓ 模型对比表 -> ./experiments/model_comparison.csv")
+
+# 保存消融实验结果
+ablation_plot = ablation_df[['ROC_AUC', 'Recall', 'F1']]
+fig, ax = plt.subplots(figsize=(10, 5))
+ablation_plot.plot(kind='bar', ax=ax)
+ax.set_ylim(0, 1.0)
+ax.set_title('Ablation Study')
+ax.set_ylabel('Score')
+ax.grid(axis='y', alpha=0.3)
+plt.xticks(rotation=20, ha='right')
+plt.tight_layout()
+plt.savefig('./experiments/ablation_results.png', dpi=150, bbox_inches='tight')
+plt.show()
+print("✓ 消融实验结果 -> ./experiments/ablation_results.csv")
 
 # 保存聚类结果
 df_cluster_profile[['Cluster'] + cluster_features].to_csv(

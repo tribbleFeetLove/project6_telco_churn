@@ -14,6 +14,7 @@
 ## 安装依赖
 
 ```bash
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
@@ -21,13 +22,19 @@ pip install -r requirements.txt
 
 1. 从 Kaggle 下载数据集：`WA_Fn-UseC_-Telco-Customer-Churn.csv`
 2. 将数据文件放入 `data/raw/` 目录
-3. 运行 Jupyter Notebook 即可自动加载
+3. 运行训练脚本或 Jupyter Notebook 即可自动加载
 
-或者直接在 Notebook 中运行，数据将自动从网络加载。
+如果本地数据文件不存在，脚本会尝试从 IBM GitHub 备用源加载数据。
 
 ## 运行说明
 
 ### 完整分析流程
+
+```bash
+python train.py --config configs/default.yaml
+```
+
+或使用 Notebook 交互式复现：
 
 ```bash
 jupyter notebook Telco_Customer_Churn_Analysis.ipynb
@@ -44,14 +51,11 @@ jupyter notebook Telco_Customer_Churn_Analysis.ipynb
 ### 单独运行模块
 
 ```bash
-# 数据预处理
-python -m utils.data_utils
-
 # 模型训练
 python train.py --config configs/default.yaml
 
 # 模型评估
-python evaluate.py --model_path models/best_model.pth
+python evaluate.py --config configs/default.yaml --model-path models/best_model_with_features.pkl
 ```
 
 ## 项目结构
@@ -71,6 +75,8 @@ project6_telco_churn/
 ├── configs/                 # 配置文件
 │   └── default.yaml
 ├── experiments/             # 实验记录
+├── train.py                 # 训练入口
+├── evaluate.py              # 评估入口
 ├── Telco_Customer_Churn_Analysis.ipynb  # 主分析流程
 ├── requirements.txt
 └── README.md
@@ -88,7 +94,9 @@ project6_telco_churn/
 
 | 模型 | Accuracy | Precision | Recall | F1 | ROC-AUC |
 |------|----------|-----------|--------|----|---------|
-| Logistic Regression | - | - | - | - | - |
-| Random Forest | - | - | - | - | - |
-| XGBoost | - | - | - | - | - |
-| LightGBM | - | - | - | - | - |
+| Logistic Regression | 0.7622 | 0.5404 | 0.6979 | 0.6091 | 0.8364 |
+| Random Forest | 0.7786 | 0.5662 | 0.7086 | 0.6295 | 0.8386 |
+| XGBoost | 0.7814 | 0.5878 | 0.5909 | 0.5893 | 0.8245 |
+| LightGBM | 0.7743 | 0.5737 | 0.5829 | 0.5782 | 0.8217 |
+
+说明：训练流程中的 WOE 特征只在训练集上拟合，再映射到测试集，避免测试集标签泄漏。
