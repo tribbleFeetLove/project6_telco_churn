@@ -46,6 +46,8 @@ import shap
 import joblib
 from tqdm import tqdm
 
+from utils.data_utils import add_woe_features
+
 # ---- 设置中文字体 ----
 matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
 matplotlib.rcParams['axes.unicode_minus'] = False
@@ -304,7 +306,7 @@ for feat, corr_val in churn_corr.head(10).items():
     direction = '正相关' if corr_val > 0 else '负相关'
     print(f"  {feat:<25s}: {corr_val:+.4f} ({direction})")
 
-# ---- 特征工程: RFM + WOE ----
+# ---- 特征工程: RFM ----
 df_fe = df.copy()
 y = df_fe['Churn']
 
@@ -342,53 +344,39 @@ print(f"  F_Score (频率):   mean={df_fe['F_Score'].mean():.2f}")
 print(f"  M_Score (金额):   mean={df_fe['M_Score'].mean():.2f}")
 print(f"  RFM_Total:        mean={df_fe['RFM_Total'].mean():.4f}")
 
-# ---- WOE分箱对关键特征 ----
-def compute_woe(feature, target, n_bins=10):
-    """计算单个特征的WOE编码"""
-    df_temp = pd.DataFrame({'feature': feature, 'target': target})
-    if df_temp['feature'].nunique() > n_bins:
-        df_temp['bin'] = pd.qcut(df_temp['feature'], q=n_bins, duplicates='drop')
-    else:
-        df_temp['bin'] = df_temp['feature']
-    
-    grouped = df_temp.groupby('bin').agg(
-        good=('target', lambda x: (x == 0).sum()),
-        bad=('target', lambda x: (x == 1).sum())
-    )
-    total_good = (target == 0).sum()
-    total_bad = (target == 1).sum()
-    
-    grouped['good_pct'] = grouped['good'] / total_good
-    grouped['bad_pct'] = grouped['bad'] / total_bad
-    grouped['good_pct'] = grouped['good_pct'].replace(0, 1e-6)
-    grouped['bad_pct'] = grouped['bad_pct'].replace(0, 1e-6)
-    grouped['WOE'] = np.log(grouped['good_pct'] / grouped['bad_pct'])
-    
-    woe_map = grouped['WOE'].to_dict()
-    return df_temp['bin'].map(woe_map), grouped
+print("WOE编码将在训练/测试划分后仅使用训练集拟合，避免标签泄漏")
+print(f"\nRFM特征工程后特征数: {df_fe.shape[1]}")
 
-# 对关键数值特征进行WOE编码
-woe_features = ['tenure', 'MonthlyCharges', 'TotalCharges']
-for col in woe_features:
-    if col in df_fe.columns:
-        woe_series, woe_info = compute_woe(df_fe[col], y, n_bins=10)
-        df_fe[f'{col}_WOE'] = woe_series
-        print(f"✓ WOE编码: {col} -> {col}_WOE")
-
-print(f"\n特征工程后特征数: {df_fe.shape[1]}")
-
-# ---- 特征重要性预分析 ----
 X_all = df_fe.drop('Churn', axis=1)
 y_all = df_fe['Churn']
 
-# 使用随机森林快速评估
-rf_pre = RandomForestClassifier(n_estimators=100, max_depth=8, 
-                                random_state=RANDOM_STATE, n_jobs=-1)
-rf_pre.fit(X_all, y_all)
+# ---- 数据划分 ----
+X_train, X_test, y_train, y_test = train_test_split(
+    X_all, y_all, test_size=0.2, random_state=RANDOM_STATE, stratify=y_all
+)
 
-# 排序显示
+print(f"训练集: {X_train.shape[0]} 样本 (流失率: {y_train.mean():.2%})")
+print(f"测试集: {X_test.shape[0]} 样本 (流失率: {y_test.mean():.2%})")
+
+# ---- WOE分箱对关键特征 ----
+woe_features = ['tenure', 'MonthlyCharges', 'TotalCharges']
+X_train, X_test = add_woe_features(
+    X_train,
+    X_test,
+    y_train,
+    columns=woe_features,
+    n_bins=10,
+)
+print("✓ WOE编码完成: 仅用训练集拟合分箱和WOE映射")
+print(f"建模特征数: {X_train.shape[1]}")
+
+# ---- 特征重要性预分析 ----
+rf_pre = RandomForestClassifier(n_estimators=100, max_depth=8,
+                                random_state=RANDOM_STATE, n_jobs=-1)
+rf_pre.fit(X_train, y_train)
+
 importance_df = pd.DataFrame({
-    'Feature': X_all.columns,
+    'Feature': X_train.columns,
     'Importance': rf_pre.feature_importances_
 }).sort_values('Importance', ascending=False).head(20)
 
@@ -398,7 +386,8 @@ plt.barh(range(len(importance_df)), importance_df['Importance'].values[::-1],
          color=colors[::-1], edgecolor='white')
 plt.yticks(range(len(importance_df)), importance_df['Feature'].values[::-1])
 plt.xlabel('Feature Importance', fontsize=12)
-plt.title('Random Forest Feature Importance (Top 20)', fontsize=14, fontweight='bold')
+plt.title('Random Forest Feature Importance on Training Set (Top 20)',
+          fontsize=14, fontweight='bold')
 plt.tight_layout()
 plt.savefig('./experiments/feature_importance_preliminary.png', dpi=150, bbox_inches='tight')
 plt.show()
@@ -406,14 +395,6 @@ plt.show()
 print("Top-10 重要特征:")
 for i, row in importance_df.head(10).iterrows():
     print(f"  {row['Feature']:<30s}: {row['Importance']:.6f}")
-
-# ---- 数据划分 ----
-X_train, X_test, y_train, y_test = train_test_split(
-    X_all, y_all, test_size=0.2, random_state=RANDOM_STATE, stratify=y_all
-)
-
-print(f"训练集: {X_train.shape[0]} 样本 (流失率: {y_train.mean():.2%})")
-print(f"测试集: {X_test.shape[0]} 样本 (流失率: {y_test.mean():.2%})")
 
 # ---- SMOTE过采样 ----
 print(f"\nSMOTE处理前:")
@@ -729,9 +710,12 @@ plt.show()
 
 # ---- SHAP特征重要性排序 ----
 shap_importance = np.abs(shap_values).mean(axis=0)
+if shap_importance.ndim > 1:
+    shap_importance = shap_importance.flatten()
+n_show = min(len(X_sample.columns), len(shap_importance))
 shap_importance_df = pd.DataFrame({
-    'Feature': X_sample.columns,
-    'SHAP_Importance': shap_importance
+    'Feature': X_sample.columns[:n_show],
+    'SHAP_Importance': shap_importance[:n_show]
 }).sort_values('SHAP_Importance', ascending=False)
 
 print("SHAP特征重要性 Top-15:")
