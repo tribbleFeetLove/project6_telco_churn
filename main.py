@@ -2,7 +2,7 @@
 电信客户流失预测与价值细分系统 — 完整分析脚本
 可直接运行: python main.py
 """
-import os, warnings, json
+import os, sys, warnings, json, yaml
 warnings.filterwarnings('ignore')
 
 import numpy as np
@@ -26,16 +26,27 @@ from imblearn.over_sampling import SMOTE
 import shap
 import joblib
 
-# 全局设置
-RANDOM_STATE = 42
+# ===== 加载配置 =====
+config_path = './configs/default.yaml'
+if os.path.exists(config_path):
+    with open(config_path, 'r', encoding='utf-8') as f:
+        cfg = yaml.safe_load(f)
+    print(f"已加载配置文件: {config_path}")
+else:
+    cfg = {}
+    print("配置文件不存在，使用默认参数")
+
+RANDOM_STATE = cfg.get('data', {}).get('random_state', 42)
 np.random.seed(RANDOM_STATE)
+
 matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
 matplotlib.rcParams['axes.unicode_minus'] = False
 plt.style.use('seaborn-v0_8-whitegrid')
-EXPERIMENTS_DIR = './experiments'
+EXPERIMENTS_DIR = cfg.get('logging', {}).get('log_dir', './experiments')
 os.makedirs(EXPERIMENTS_DIR, exist_ok=True)
 os.makedirs('./models', exist_ok=True)
 os.makedirs('./data/raw', exist_ok=True)
+
 
 def safe_fillna(df):
     """安全填充NaN：将categorical列转为float再填充"""
@@ -47,17 +58,63 @@ def safe_fillna(df):
                 df[col] = df[col].fillna(0)
     return df
 
+
+def load_config_models():
+    """从配置中读取模型参数并构建模型字典"""
+    train_cfg = cfg.get('training', {})
+    model_names = cfg.get('model', {}).get('models',
+        ['logistic_regression', 'random_forest', 'xgboost', 'lightgbm'])
+
+    model_map = {
+        'logistic_regression': 'Logistic Regression',
+        'random_forest': 'Random Forest',
+        'xgboost': 'XGBoost',
+        'lightgbm': 'LightGBM',
+    }
+
+    models = {}
+    for m in model_names:
+        params = train_cfg.get(m, {})
+        display_name = model_map.get(m, m)
+        if m == 'logistic_regression':
+            models[display_name] = LogisticRegression(
+                C=params.get('C', 1.0), max_iter=params.get('max_iter', 1000),
+                solver=params.get('solver', 'liblinear'), random_state=RANDOM_STATE)
+        elif m == 'random_forest':
+            models[display_name] = RandomForestClassifier(
+                n_estimators=params.get('n_estimators', 200), max_depth=params.get('max_depth', 10),
+                min_samples_split=params.get('min_samples_split', 10),
+                min_samples_leaf=params.get('min_samples_leaf', 5),
+                random_state=RANDOM_STATE, n_jobs=-1)
+        elif m == 'xgboost':
+            models[display_name] = xgb.XGBClassifier(
+                n_estimators=params.get('n_estimators', 200), max_depth=params.get('max_depth', 6),
+                learning_rate=params.get('learning_rate', 0.1), subsample=params.get('subsample', 0.8),
+                colsample_bytree=params.get('colsample_bytree', 0.8),
+                random_state=RANDOM_STATE, eval_metric='logloss')
+        elif m == 'lightgbm':
+            models[display_name] = lgb.LGBMClassifier(
+                n_estimators=params.get('n_estimators', 200), max_depth=params.get('max_depth', 6),
+                learning_rate=params.get('learning_rate', 0.1), num_leaves=params.get('num_leaves', 31),
+                subsample=params.get('subsample', 0.8), colsample_bytree=params.get('colsample_bytree', 0.8),
+                random_state=RANDOM_STATE, verbose=-1)
+    return models
+
+
 print("=" * 70)
 print("电信客户流失预测与价值细分系统 — 项目6")
 print("=" * 70)
 
 # ===== 1. 数据加载 =====
 print("\n[1/10] 数据加载...")
-DATA_PATH = './data/raw/WA_Fn-UseC_-Telco-Customer-Churn.csv'
-if os.path.exists(DATA_PATH):
-    df_raw = pd.read_csv(DATA_PATH)
+data_cfg = cfg.get('data', {})
+data_file = data_cfg.get('data_file', 'WA_Fn-UseC_-Telco-Customer-Churn.csv')
+data_path = os.path.join(data_cfg.get('data_path', './data/raw'), data_file)
+if os.path.exists(data_path):
+    df_raw = pd.read_csv(data_path)
 else:
-    df_raw = pd.read_csv('https://raw.githubusercontent.com/IBM/telco-customer-churn-on-icp4d/master/data/Telco-Customer-Churn.csv')
+    fallback_url = "https://raw.githubusercontent.com/IBM/telco-customer-churn-on-icp4d/master/data/Telco-Customer-Churn.csv"
+    df_raw = pd.read_csv(fallback_url)
 print(f"  数据集: {df_raw.shape[0]} 条 × {df_raw.shape[1]} 列, 流失率: {df_raw['Churn'].eq('Yes').mean():.2%}")
 
 # ===== 2. 数据预处理 =====
@@ -66,9 +123,12 @@ df = df_raw.copy()
 df.drop('customerID', axis=1, inplace=True)
 df['Churn'] = df['Churn'].map({'Yes': 1, 'No': 0})
 df['TotalCharges'] = pd.to_numeric(df['TotalCharges'], errors='coerce')
-df['TotalCharges'].fillna(df['TotalCharges'].median(), inplace=True)
+missing_strategy = cfg.get('preprocessing', {}).get('missing_strategy', 'median')
+if missing_strategy == 'median':
+    df['TotalCharges'].fillna(df['TotalCharges'].median(), inplace=True)
+else:
+    df['TotalCharges'].fillna(df['TotalCharges'].mean(), inplace=True)
 
-# Label Encoding
 for col in df.select_dtypes(include=['object']).columns:
     df[col] = LabelEncoder().fit_transform(df[col].astype(str))
 
@@ -94,10 +154,10 @@ def compute_woe(feature, target, n_bins=10):
     g['woe'] = np.log((g['good']/tg + 1e-6) / (g['bad']/tb + 1e-6))
     return df_t['bin'].map(g['woe'])
 
+woe_bins = cfg.get('feature_engineering', {}).get('woe_bins', 10)
 for col in ['tenure', 'MonthlyCharges', 'TotalCharges']:
-    df[f'{col}_WOE'] = compute_woe(df[col], df['Churn'])
+    df[f'{col}_WOE'] = compute_woe(df[col], df['Churn'], n_bins=woe_bins)
 
-# 转为float并处理NaN
 for col in df.columns:
     if df[col].dtype.name == 'category':
         df[col] = df[col].astype(float)
@@ -108,7 +168,9 @@ print(f"  特征工程后: {df.shape[1]} 个特征")
 print("\n[4/10] 数据划分与SMOTE过采样...")
 X = df.drop('Churn', axis=1)
 y = df['Churn']
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=RANDOM_STATE, stratify=y)
+train_ratio = cfg.get('data', {}).get('train_ratio', 0.8)
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=1-train_ratio, random_state=RANDOM_STATE, stratify=y)
 print(f"  训练集: {X_train.shape[0]}, 测试集: {X_test.shape[0]}")
 
 smote = SMOTE(random_state=RANDOM_STATE)
@@ -118,16 +180,12 @@ print(f"  SMOTE后: {X_train_smote.shape[0]} ({y_train_smote.mean():.1%} 流失)
 
 # ===== 5. 模型定义 =====
 print("\n[5/10] 构建4种分类模型...")
-models = {
-    'Logistic Regression': LogisticRegression(C=1.0, max_iter=1000, solver='liblinear', random_state=RANDOM_STATE),
-    'Random Forest': RandomForestClassifier(n_estimators=200, max_depth=10, min_samples_split=10, min_samples_leaf=5, random_state=RANDOM_STATE, n_jobs=-1),
-    'XGBoost': xgb.XGBClassifier(n_estimators=200, max_depth=6, learning_rate=0.1, subsample=0.8, colsample_bytree=0.8, random_state=RANDOM_STATE, eval_metric='logloss'),
-    'LightGBM': lgb.LGBMClassifier(n_estimators=200, max_depth=6, learning_rate=0.1, num_leaves=31, subsample=0.8, colsample_bytree=0.8, random_state=RANDOM_STATE, verbose=-1),
-}
+models = load_config_models()
 
 # ===== 6. 交叉验证 =====
 print("\n[6/10] 5折交叉验证...")
-cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
+cv_folds = cfg.get('model', {}).get('cv_folds', 5)
+cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=RANDOM_STATE)
 cv_rows = []
 for name, model in models.items():
     row = {'Model': name}
@@ -165,7 +223,6 @@ comp_df = pd.DataFrame(comp_rows).set_index('Model')
 # ===== 8. 可视化 =====
 print("\n[8/10] 生成评估图表...")
 
-# 模型对比柱状图
 fig, ax = plt.subplots(figsize=(12, 6))
 metrics = ['Accuracy', 'Precision', 'Recall', 'F1', 'ROC_AUC', 'PR_AUC']
 x = np.arange(len(metrics))
@@ -178,7 +235,6 @@ ax.set_xticks(x); ax.set_xticklabels(metrics); ax.set_ylim(0, 1.0)
 ax.set_title('Model Performance Comparison'); ax.legend(loc='lower right'); ax.grid(axis='y', alpha=0.3)
 plt.tight_layout(); plt.savefig(f'{EXPERIMENTS_DIR}/model_comparison.png', dpi=150); plt.close()
 
-# ROC曲线
 fig, ax = plt.subplots(figsize=(8, 7))
 for i, (name, r) in enumerate(all_results.items()):
     fpr, tpr, _ = roc_curve(y_test, r['y_prob'])
@@ -187,7 +243,6 @@ ax.plot([0, 1], [0, 1], 'k--', alpha=0.5); ax.set_xlabel('FPR'); ax.set_ylabel('
 ax.set_title('ROC Curves'); ax.legend(); ax.grid(alpha=0.3)
 plt.tight_layout(); plt.savefig(f'{EXPERIMENTS_DIR}/roc_curves.png', dpi=150); plt.close()
 
-# PR曲线
 fig, ax = plt.subplots(figsize=(8, 7))
 for i, (name, r) in enumerate(all_results.items()):
     p, rec, _ = precision_recall_curve(y_test, r['y_prob'])
@@ -196,7 +251,6 @@ ax.axhline(y=y_test.mean(), color='gray', linestyle='--', label=f'Baseline ({y_t
 ax.set_xlabel('Recall'); ax.set_ylabel('Precision'); ax.set_title('PR Curves'); ax.legend(); ax.grid(alpha=0.3)
 plt.tight_layout(); plt.savefig(f'{EXPERIMENTS_DIR}/pr_curves.png', dpi=150); plt.close()
 
-# 混淆矩阵
 fig, axes = plt.subplots(1, 4, figsize=(18, 4))
 for ax, (name, r) in zip(axes, all_results.items()):
     cm = r['cm']
@@ -205,7 +259,6 @@ for ax, (name, r) in zip(axes, all_results.items()):
     ax.set_title(name, fontweight='bold'); ax.set_xlabel(f'Recall={cm[1,1]/(cm[1,1]+cm[1,0]):.2f}')
 plt.tight_layout(); plt.savefig(f'{EXPERIMENTS_DIR}/confusion_matrices.png', dpi=150); plt.close()
 
-# 特征重要性
 best_name = max(all_results, key=lambda x: all_results[x]['roc_auc'])
 best_model = all_results[best_name]['model']
 if hasattr(best_model, 'feature_importances_'):
@@ -243,30 +296,32 @@ plt.tight_layout(); plt.savefig(f'{EXPERIMENTS_DIR}/shap_summary.png', dpi=150);
 
 # ===== 10. 客户聚类 =====
 print("\n[10/10] 客户聚类细分...")
+cluster_cfg = cfg.get('clustering', {})
+n_clusters = cluster_cfg.get('n_clusters_kmeans', 4)
+dbscan_eps = cluster_cfg.get('dbscan_eps', 0.5)
+dbscan_min_samples = cluster_cfg.get('dbscan_min_samples', 10)
+
 cluster_features = ['tenure', 'MonthlyCharges', 'TotalCharges', 'R_Score', 'F_Score', 'M_Score', 'RFM_Total']
 X_cl = df[cluster_features]
 X_cl_scaled = StandardScaler().fit_transform(X_cl)
 
-# K-Means
-kmeans = KMeans(n_clusters=4, random_state=RANDOM_STATE, n_init=10)
+kmeans = KMeans(n_clusters=n_clusters, random_state=RANDOM_STATE, n_init=10)
 cl_labels = kmeans.fit_predict(X_cl_scaled)
 
-# PCA 可视化
 pca = PCA(n_components=2, random_state=RANDOM_STATE)
 X_pca = pca.fit_transform(X_cl_scaled)
 fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 cl_colors = ['#3498db', '#e74c3c', '#2ecc71', '#f39c12']
-for i in range(4):
+for i in range(n_clusters):
     mask = cl_labels == i
     axes[0].scatter(X_pca[mask, 0], X_pca[mask, 1], c=cl_colors[i], label=f'Cluster {i}', alpha=0.6, edgecolors='white', s=30)
 axes[0].set_title('K-Means Customer Segmentation'); axes[0].legend()
 cl_counts = pd.Series(cl_labels).value_counts().sort_index()
-axes[1].pie(cl_counts.values, labels=[f'C{i} ({cl_counts[i]})' for i in range(4)], autopct='%1.1f%%', colors=cl_colors)
+axes[1].pie(cl_counts.values, labels=[f'C{i} ({cl_counts[i]})' for i in range(n_clusters)], autopct='%1.1f%%', colors=cl_colors)
 axes[1].set_title('Cluster Distribution')
 plt.tight_layout(); plt.savefig(f'{EXPERIMENTS_DIR}/kmeans_clustering.png', dpi=150); plt.close()
 
-# DBSCAN
-dbscan = DBSCAN(eps=0.5, min_samples=10)
+dbscan = DBSCAN(eps=dbscan_eps, min_samples=dbscan_min_samples)
 db_labels = dbscan.fit_predict(X_cl_scaled)
 n_clusters_db = len(set(db_labels)) - (1 if -1 in db_labels else 0)
 n_noise = list(db_labels).count(-1)
@@ -278,18 +333,15 @@ if n_noise > 0:
 ax.set_title(f'DBSCAN: {n_clusters_db} clusters, {n_noise} noise'); ax.legend()
 plt.tight_layout(); plt.savefig(f'{EXPERIMENTS_DIR}/dbscan_clustering.png', dpi=150); plt.close()
 
-# 聚类画像
 df['Cluster'] = cl_labels
 cluster_profile = df.groupby('Cluster')[['tenure', 'MonthlyCharges', 'TotalCharges', 'Churn', 'F_Score']].mean()
 cluster_profile['Size'] = cl_counts.values
 
-# 最终保存
 comp_df.to_csv(f'{EXPERIMENTS_DIR}/model_comparison.csv')
 df[['Cluster'] + cluster_features].to_csv(f'{EXPERIMENTS_DIR}/cluster_results.csv', index=False)
 shap_mean = np.abs(shap_vals).mean(axis=0)
 if shap_mean.ndim > 1:
     shap_mean = shap_mean.flatten()
-# 确保长度匹配
 n_show = min(len(X_sample.columns), len(shap_mean))
 shap_imp = pd.DataFrame({
     'Feature': X_sample.columns[:n_show],
@@ -297,7 +349,6 @@ shap_imp = pd.DataFrame({
 }).sort_values('SHAP', ascending=False)
 shap_imp.to_csv(f'{EXPERIMENTS_DIR}/shap_importance.csv', index=False)
 
-# 输出汇总
 print("\n" + "=" * 70)
 print("分析完成！结果汇总")
 print("=" * 70)
@@ -309,7 +360,7 @@ print(f"  F1-Score: {all_results[best_name]['f1']:.4f}")
 print(f"  PR-AUC:   {all_results[best_name]['pr_auc']:.4f}")
 
 print(f"\n聚类分析:")
-for i in range(4):
+for i in range(n_clusters):
     churn_r = cluster_profile.loc[i, 'Churn']
     print(f"  Cluster {i}: {cluster_profile.loc[i, 'Size']:.0f}人, 流失率={churn_r:.2%}, 月费=${cluster_profile.loc[i, 'MonthlyCharges']:.1f}")
 
