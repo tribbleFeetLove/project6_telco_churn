@@ -25,6 +25,10 @@ from imblearn.over_sampling import SMOTE
 import shap
 import joblib
 
+from utils.data_utils import set_random_seed, split_data, apply_smote
+from utils.model_utils import save_model
+from utils.visualization import setup_plot_style
+
 # ===== 日志配置 =====
 logging.basicConfig(
     level=logging.INFO,
@@ -48,11 +52,11 @@ else:
     logger.warning("配置文件不存在，使用默认参数")
 
 RANDOM_STATE = cfg.get('data', {}).get('random_state', 42)
-np.random.seed(RANDOM_STATE)
+set_random_seed(RANDOM_STATE)
 
 matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
 matplotlib.rcParams['axes.unicode_minus'] = False
-plt.style.use('seaborn-v0_8-whitegrid')
+setup_plot_style()
 EXPERIMENTS_DIR = cfg.get('logging', {}).get('log_dir', './experiments')
 os.makedirs(EXPERIMENTS_DIR, exist_ok=True)
 os.makedirs('./models', exist_ok=True)
@@ -182,12 +186,10 @@ logger.info("[4/10] 数据划分与SMOTE过采样...")
 X = df.drop('Churn', axis=1)
 y = df['Churn']
 train_ratio = cfg.get('data', {}).get('train_ratio', 0.8)
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=1-train_ratio, random_state=RANDOM_STATE, stratify=y)
-logger.info(f"  训练集: {X_train.shape[0]}, 测试集: {X_test.shape[0]}")
+X_train, X_test, y_train, y_test = split_data(
+    X, y, train_ratio=train_ratio, random_state=RANDOM_STATE)
 
-smote = SMOTE(random_state=RANDOM_STATE)
-X_train_smote, y_train_smote = smote.fit_resample(X_train, y_train)
+X_train_smote, y_train_smote = apply_smote(X_train, y_train, random_state=RANDOM_STATE)
 X_train_smote = safe_fillna(X_train_smote)
 logger.info(f"  SMOTE后: {X_train_smote.shape[0]} ({y_train_smote.mean():.1%} 流失)")
 
@@ -284,7 +286,7 @@ if hasattr(best_model, 'feature_importances_'):
     plt.tight_layout(); plt.savefig(f'{EXPERIMENTS_DIR}/feature_importance.png', dpi=150); plt.close()
 
 logger.info(f"  最佳模型: {best_name} (ROC-AUC={all_results[best_name]['roc_auc']:.4f})")
-joblib.dump(best_model, './models/best_model.pkl')
+save_model(best_model, './models/best_model.pkl')
 
 # ===== 9. SHAP分析 =====
 logger.info("[9/10] SHAP可解释性分析...")
