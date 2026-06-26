@@ -2,7 +2,7 @@
 电信客户流失预测与价值细分系统 — 完整分析脚本
 可直接运行: python main.py
 """
-import os, sys, warnings, json, yaml
+import os, sys, warnings, json, yaml, logging
 warnings.filterwarnings('ignore')
 
 import numpy as np
@@ -19,22 +19,33 @@ from sklearn.metrics import (accuracy_score, precision_score, recall_score, f1_s
     roc_auc_score, average_precision_score, confusion_matrix, roc_curve, precision_recall_curve)
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans, DBSCAN
-from sklearn.metrics import silhouette_score, davies_bouldin_score
 import xgboost as xgb
 import lightgbm as lgb
 from imblearn.over_sampling import SMOTE
 import shap
 import joblib
 
+# ===== 日志配置 =====
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%H:%M:%S',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('./experiments/pipeline.log', mode='w', encoding='utf-8')
+    ]
+)
+logger = logging.getLogger(__name__)
+
 # ===== 加载配置 =====
 config_path = './configs/default.yaml'
 if os.path.exists(config_path):
     with open(config_path, 'r', encoding='utf-8') as f:
         cfg = yaml.safe_load(f)
-    print(f"已加载配置文件: {config_path}")
+    logger.info(f"已加载配置文件: {config_path}")
 else:
     cfg = {}
-    print("配置文件不存在，使用默认参数")
+    logger.warning("配置文件不存在，使用默认参数")
 
 RANDOM_STATE = cfg.get('data', {}).get('random_state', 42)
 np.random.seed(RANDOM_STATE)
@@ -101,24 +112,26 @@ def load_config_models():
     return models
 
 
-print("=" * 70)
-print("电信客户流失预测与价值细分系统 — 项目6")
-print("=" * 70)
+logger.info("=" * 60)
+logger.info("电信客户流失预测与价值细分系统 — 项目6")
+logger.info("=" * 60)
 
 # ===== 1. 数据加载 =====
-print("\n[1/10] 数据加载...")
+logger.info("[1/10] 数据加载...")
 data_cfg = cfg.get('data', {})
 data_file = data_cfg.get('data_file', 'WA_Fn-UseC_-Telco-Customer-Churn.csv')
 data_path = os.path.join(data_cfg.get('data_path', './data/raw'), data_file)
 if os.path.exists(data_path):
     df_raw = pd.read_csv(data_path)
+    logger.info(f"从本地加载: {data_path}")
 else:
     fallback_url = "https://raw.githubusercontent.com/IBM/telco-customer-churn-on-icp4d/master/data/Telco-Customer-Churn.csv"
     df_raw = pd.read_csv(fallback_url)
-print(f"  数据集: {df_raw.shape[0]} 条 × {df_raw.shape[1]} 列, 流失率: {df_raw['Churn'].eq('Yes').mean():.2%}")
+    logger.info("从网络加载数据（GitHub）")
+logger.info(f"  数据集: {df_raw.shape[0]} 条 × {df_raw.shape[1]} 列, 流失率: {df_raw['Churn'].eq('Yes').mean():.2%}")
 
 # ===== 2. 数据预处理 =====
-print("\n[2/10] 数据预处理...")
+logger.info("[2/10] 数据预处理...")
 df = df_raw.copy()
 df.drop('customerID', axis=1, inplace=True)
 df['Churn'] = df['Churn'].map({'Yes': 1, 'No': 0})
@@ -133,7 +146,7 @@ for col in df.select_dtypes(include=['object']).columns:
     df[col] = LabelEncoder().fit_transform(df[col].astype(str))
 
 # ===== 3. 特征工程 =====
-print("\n[3/10] 特征工程 (RFM + WOE)...")
+logger.info("[3/10] 特征工程 (RFM + WOE)...")
 # RFM
 df['R_Score'] = 1 / (df['tenure'] + 1)
 svc_cols = ['PhoneService', 'MultipleLines', 'InternetService', 'OnlineSecurity',
@@ -162,28 +175,28 @@ for col in df.columns:
     if df[col].dtype.name == 'category':
         df[col] = df[col].astype(float)
 df.fillna(0, inplace=True)
-print(f"  特征工程后: {df.shape[1]} 个特征")
+logger.info(f"  特征工程后: {df.shape[1]} 个特征")
 
 # ===== 4. 数据划分与SMOTE =====
-print("\n[4/10] 数据划分与SMOTE过采样...")
+logger.info("[4/10] 数据划分与SMOTE过采样...")
 X = df.drop('Churn', axis=1)
 y = df['Churn']
 train_ratio = cfg.get('data', {}).get('train_ratio', 0.8)
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=1-train_ratio, random_state=RANDOM_STATE, stratify=y)
-print(f"  训练集: {X_train.shape[0]}, 测试集: {X_test.shape[0]}")
+logger.info(f"  训练集: {X_train.shape[0]}, 测试集: {X_test.shape[0]}")
 
 smote = SMOTE(random_state=RANDOM_STATE)
 X_train_smote, y_train_smote = smote.fit_resample(X_train, y_train)
 X_train_smote = safe_fillna(X_train_smote)
-print(f"  SMOTE后: {X_train_smote.shape[0]} ({y_train_smote.mean():.1%} 流失)")
+logger.info(f"  SMOTE后: {X_train_smote.shape[0]} ({y_train_smote.mean():.1%} 流失)")
 
 # ===== 5. 模型定义 =====
-print("\n[5/10] 构建4种分类模型...")
+logger.info("[5/10] 构建4种分类模型...")
 models = load_config_models()
 
 # ===== 6. 交叉验证 =====
-print("\n[6/10] 5折交叉验证...")
+logger.info("[6/10] 5折交叉验证...")
 cv_folds = cfg.get('model', {}).get('cv_folds', 5)
 cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=RANDOM_STATE)
 cv_rows = []
@@ -192,11 +205,11 @@ for name, model in models.items():
     for metric in ['accuracy', 'precision', 'recall', 'f1', 'roc_auc']:
         scores = cross_val_score(model, X_train_smote, y_train_smote, cv=cv, scoring=metric, n_jobs=-1)
         row[metric] = f"{scores.mean():.4f}±{scores.std():.4f}"
-        print(f"  {name:<22s} {metric}: {scores.mean():.4f} ± {scores.std():.4f}")
+        logger.info(f"  {name:<22s} {metric}: {scores.mean():.4f} ± {scores.std():.4f}")
     cv_rows.append(row)
 
 # ===== 7. 训练与评估 =====
-print("\n[7/10] 训练模型与测试集评估...")
+logger.info("[7/10] 训练模型与测试集评估...")
 all_results = {}
 comp_rows = []
 for name, model in models.items():
@@ -216,12 +229,12 @@ for name, model in models.items():
     all_results[name] = results
     comp_rows.append({'Model': name, 'Accuracy': results['accuracy'], 'Precision': results['precision'],
         'Recall': results['recall'], 'F1': results['f1'], 'ROC_AUC': results['roc_auc'], 'PR_AUC': results['pr_auc']})
-    print(f"  {name:<22s} ROC-AUC={results['roc_auc']:.4f}  Recall={results['recall']:.4f}  F1={results['f1']:.4f}")
+    logger.info(f"  {name:<22s} ROC-AUC={results['roc_auc']:.4f}  Recall={results['recall']:.4f}  F1={results['f1']:.4f}")
 
 comp_df = pd.DataFrame(comp_rows).set_index('Model')
 
 # ===== 8. 可视化 =====
-print("\n[8/10] 生成评估图表...")
+logger.info("[8/10] 生成评估图表...")
 
 fig, ax = plt.subplots(figsize=(12, 6))
 metrics = ['Accuracy', 'Precision', 'Recall', 'F1', 'ROC_AUC', 'PR_AUC']
@@ -270,11 +283,11 @@ if hasattr(best_model, 'feature_importances_'):
     ax.set_title(f'Feature Importance ({best_name})'); ax.set_xlabel('Importance')
     plt.tight_layout(); plt.savefig(f'{EXPERIMENTS_DIR}/feature_importance.png', dpi=150); plt.close()
 
-print(f"  最佳模型: {best_name} (ROC-AUC={all_results[best_name]['roc_auc']:.4f})")
+logger.info(f"  最佳模型: {best_name} (ROC-AUC={all_results[best_name]['roc_auc']:.4f})")
 joblib.dump(best_model, './models/best_model.pkl')
 
 # ===== 9. SHAP分析 =====
-print("\n[9/10] SHAP可解释性分析...")
+logger.info("[9/10] SHAP可解释性分析...")
 X_sample = X_train.sample(n=min(300, len(X_train)), random_state=RANDOM_STATE)
 try:
     explainer = shap.TreeExplainer(best_model)
@@ -295,7 +308,7 @@ axes[1].set_title('SHAP Summary Plot')
 plt.tight_layout(); plt.savefig(f'{EXPERIMENTS_DIR}/shap_summary.png', dpi=150); plt.close()
 
 # ===== 10. 客户聚类 =====
-print("\n[10/10] 客户聚类细分...")
+logger.info("[10/10] 客户聚类细分...")
 cluster_cfg = cfg.get('clustering', {})
 n_clusters = cluster_cfg.get('n_clusters_kmeans', 4)
 dbscan_eps = cluster_cfg.get('dbscan_eps', 0.5)
@@ -349,27 +362,22 @@ shap_imp = pd.DataFrame({
 }).sort_values('SHAP', ascending=False)
 shap_imp.to_csv(f'{EXPERIMENTS_DIR}/shap_importance.csv', index=False)
 
-print("\n" + "=" * 70)
-print("分析完成！结果汇总")
-print("=" * 70)
-print(f"\n最佳模型: {best_name}")
-print(f"  ROC-AUC:  {all_results[best_name]['roc_auc']:.4f}")
-print(f"  Recall:   {all_results[best_name]['recall']:.4f}")
-print(f"  Precision:{all_results[best_name]['precision']:.4f}")
-print(f"  F1-Score: {all_results[best_name]['f1']:.4f}")
-print(f"  PR-AUC:   {all_results[best_name]['pr_auc']:.4f}")
+logger.info("=" * 60)
+logger.info("分析完成！结果汇总")
+logger.info("=" * 60)
+logger.info(f"最佳模型: {best_name}")
+logger.info(f"  ROC-AUC:  {all_results[best_name]['roc_auc']:.4f}")
+logger.info(f"  Recall:   {all_results[best_name]['recall']:.4f}")
+logger.info(f"  Precision:{all_results[best_name]['precision']:.4f}")
+logger.info(f"  F1-Score: {all_results[best_name]['f1']:.4f}")
+logger.info(f"  PR-AUC:   {all_results[best_name]['pr_auc']:.4f}")
 
-print(f"\n聚类分析:")
+logger.info("聚类分析:")
 for i in range(n_clusters):
     churn_r = cluster_profile.loc[i, 'Churn']
-    print(f"  Cluster {i}: {cluster_profile.loc[i, 'Size']:.0f}人, 流失率={churn_r:.2%}, 月费=${cluster_profile.loc[i, 'MonthlyCharges']:.1f}")
+    logger.info(f"  Cluster {i}: {cluster_profile.loc[i, 'Size']:.0f}人, 流失率={churn_r:.2%}, 月费=${cluster_profile.loc[i, 'MonthlyCharges']:.1f}")
 
-print(f"\n模型对比表:")
-print(comp_df.to_string())
-print(f"\n✓ 最佳模型: ./models/best_model.pkl")
-print(f"✓ 实验结果: {EXPERIMENTS_DIR}/")
-print(f"  - model_comparison.csv")
-print(f"  - shap_importance.csv")
-print(f"  - cluster_results.csv")
-print(f"  - *.png (可视化图表)")
-print("\nDone!")
+logger.info(f"模型对比表:\n{comp_df.to_string()}")
+logger.info(f"✓ 最佳模型: ./models/best_model.pkl")
+logger.info(f"✓ 实验结果: {EXPERIMENTS_DIR}/")
+logger.info("Done!")
