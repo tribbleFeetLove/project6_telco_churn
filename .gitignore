@@ -6,6 +6,11 @@ findings.md
 progress.md
 task_plan.md
 
+# 文档生成脚本（交付物只保留报告/PPT本体）
+build_report.py
+build_ppt.py
+convert_report.py
+
 # Python 缓存
 __pycache__/
 *.pyc
