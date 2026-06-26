@@ -1,6 +1,11 @@
 # 临时实验输出
 *.log
 
+# Codex/agent 工作过程记录
+findings.md
+progress.md
+task_plan.md
+
 # Python 缓存
 __pycache__/
 *.pyc
