@@ -1,0 +1,35 @@
+# 实验输出
+experiments/
+*.png
+*.csv
+
+# 模型文件
+models/best_model.pkl
+*.pkl
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Jupyter 检查点
+.ipynb_checkpoints/
+
+# 生成的报告
+实验报告.docx
+实验报告.pdf
+实验报告.md
+答辩PPT.pptx
+
+# 日志
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# 环境
+.env
+venv/
+.venv/
